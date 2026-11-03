@@ -51,6 +51,11 @@ class ChristieProjectorPlatform {
             }
             const host = typeof raw.host === 'string' ? raw.host.trim() : '';
             if (host) {
+                const validation = (0, christieClient_1.validateChristieHost)(host);
+                if (!validation.valid) {
+                    this.log.error(`Skipping Christie device "${raw.name || host}" — ${validation.reason}`);
+                    continue;
+                }
                 validDevices.push({
                     ...raw,
                     host,

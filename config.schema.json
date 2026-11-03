@@ -34,7 +34,8 @@
               "type": "string",
               "required": true,
               "placeholder": "172.16.1.247",
-              "description": "IPv4 address or hostname of the Christie projector on your local network."
+              "description": "IPv4 address or hostname of the Christie projector on your local network.",
+              "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)*([A-Za-z]|[A-Za-z][A-Za-z0-9\\-]*[A-Za-z0-9]))$"
             },
             "port": {
               "title": "TCP Port",
@@ -77,9 +78,24 @@
               "type": "string",
               "default": "SIN",
               "oneOf": [
-                { "title": "Standard Input — (SIN <id>)", "enum": ["SIN"] },
-                { "title": "Main Window Input — (SIN+MAIN <id>)", "enum": ["SIN+MAIN"] },
-                { "title": "Channel Preset — (CHA <id>)", "enum": ["CHA"] }
+                {
+                  "title": "Standard Input \u2014 (SIN <id>)",
+                  "enum": [
+                    "SIN"
+                  ]
+                },
+                {
+                  "title": "Main Window Input \u2014 (SIN+MAIN <id>)",
+                  "enum": [
+                    "SIN+MAIN"
+                  ]
+                },
+                {
+                  "title": "Channel Preset \u2014 (CHA <id>)",
+                  "enum": [
+                    "CHA"
+                  ]
+                }
               ],
               "description": "Christie command code used when selecting inputs in the HomeKit Television input picker."
             },
@@ -129,16 +145,31 @@
               "title": "Expose Laser / Lamp Output Power Slider `(LPW)`",
               "type": "boolean",
               "default": false,
-              "description": "Exposes a 0–100% slider to adjust laser/lamp power `(LPW <level>)`."
+              "description": "Exposes a 0\u2013100% slider to adjust laser/lamp power `(LPW <level>)`."
             },
             "lightSliderType": {
               "title": "Laser / Lamp Power Slider Service Type",
               "type": "string",
               "default": "lightbulb",
               "oneOf": [
-                { "title": "Lightbulb (Brightness Slider)", "enum": ["lightbulb"] },
-                { "title": "Fan (Rotation Speed Slider)", "enum": ["fan"] },
-                { "title": "Disabled", "enum": ["none"] }
+                {
+                  "title": "Lightbulb (Brightness Slider)",
+                  "enum": [
+                    "lightbulb"
+                  ]
+                },
+                {
+                  "title": "Fan (Rotation Speed Slider)",
+                  "enum": [
+                    "fan"
+                  ]
+                },
+                {
+                  "title": "Disabled",
+                  "enum": [
+                    "none"
+                  ]
+                }
               ]
             },
             "inputs": {
@@ -163,12 +194,24 @@
                     "title": "Connector Type",
                     "type": "string",
                     "default": "HDMI",
-                    "enum": ["HDMI", "DISPLAYPORT", "DVI", "SDI", "HDBASET", "OTHER"]
+                    "enum": [
+                      "HDMI",
+                      "DISPLAYPORT",
+                      "DVI",
+                      "SDI",
+                      "HDBASET",
+                      "OTHER"
+                    ]
                   },
                   "commandType": {
                     "title": "Command Override (Optional)",
                     "type": "string",
-                    "enum": ["SIN", "SIN+MAIN", "SIN+PIP", "CHA"]
+                    "enum": [
+                      "SIN",
+                      "SIN+MAIN",
+                      "SIN+PIP",
+                      "CHA"
+                    ]
                   }
                 }
               }
@@ -217,9 +260,24 @@
                     "type": "string",
                     "default": "ILF",
                     "oneOf": [
-                      { "title": "Intelligent Lens File — (ILF <id>)", "enum": ["ILF"] },
-                      { "title": "Lens Memory Load — (LML <id>)", "enum": ["LML"] },
-                      { "title": "Size / Aspect Ratio Mode — (SZE <id>)", "enum": ["SZE"] }
+                      {
+                        "title": "Intelligent Lens File \u2014 (ILF <id>)",
+                        "enum": [
+                          "ILF"
+                        ]
+                      },
+                      {
+                        "title": "Lens Memory Load \u2014 (LML <id>)",
+                        "enum": [
+                          "LML"
+                        ]
+                      },
+                      {
+                        "title": "Size / Aspect Ratio Mode \u2014 (SZE <id>)",
+                        "enum": [
+                          "SZE"
+                        ]
+                      }
                     ]
                   }
                 }
@@ -285,7 +343,9 @@
     {
       "type": "fieldset",
       "title": "General Settings",
-      "items": ["name"]
+      "items": [
+        "name"
+      ]
     },
     {
       "key": "devices",

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ChristieClient } from './dist/christieClient.js';
+import { ChristieClient, validateChristieHost } from './dist/christieClient.js';
 import { sanitizeHomeKitName, isExplicitlyNamed } from './dist/platformAccessory.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './dist/settings.js';
 import { ChristieProjectorPlatform } from './dist/platform.js';
@@ -432,5 +432,35 @@ for (const c of testPlatform['clients'].values()) {
   c.stop();
 }
 console.log('✓ Device discovery placeholder filtering passed');
+
+// 8. Test 4-Octet IPv4 Validation & Schema Pattern
+assert.strictEqual(validateChristieHost('172.16.66').valid, false, '172.16.66 has 3 octets and must be rejected');
+assert.strictEqual(validateChristieHost('10.0.0').valid, false, '10.0.0 has 3 octets and must be rejected');
+assert.strictEqual(validateChristieHost('172.16.1.1.1').valid, false, '5-octet IP must be rejected');
+assert.strictEqual(validateChristieHost('256.1.1.1').valid, false, 'out-of-range octet must be rejected');
+assert.strictEqual(validateChristieHost('172.16.1.247').valid, true, '172.16.1.247 has 4 valid octets and must be accepted');
+assert.strictEqual(validateChristieHost('christie.local').valid, true, 'valid hostname must be accepted');
+
+// Verify pattern in config.schema.json
+const christieHostPattern = new RegExp(schema.schema.properties.devices.items.properties.host.pattern);
+assert.strictEqual(christieHostPattern.test('172.16.66'), false, 'Schema pattern must reject 3-octet IPv4 172.16.66');
+assert.strictEqual(christieHostPattern.test('10.0.0'), false, 'Schema pattern must reject 3-octet IPv4 10.0.0');
+assert.strictEqual(christieHostPattern.test('256.1.1.1'), false, 'Schema pattern must reject out of range IPv4');
+assert.strictEqual(christieHostPattern.test('172.16.1.247'), true, 'Schema pattern must accept 4-octet IPv4 172.16.1.247');
+assert.strictEqual(christieHostPattern.test('christie.local'), true, 'Schema pattern must accept hostname');
+
+// Verify constructor rejects invalid IP
+assert.throws(
+  () => new ChristieClient({ host: '172.16.66' }, { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  /Invalid IPv4 address/,
+  'Constructor must reject 3-octet IP',
+);
+
+// Verify WoL method
+const wolClient = new ChristieClient({ host: '127.0.0.1', mac: '00:1E:06:12:34:56' }, { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} });
+assert.strictEqual(typeof wolClient.sendWakeOnLan, 'function');
+await wolClient.sendWakeOnLan('00:1E:06:12:34:56');
+wolClient.stop();
+console.log('✓ IPv4 4-octet validation & WoL tests passed');
 
 console.log('\n🎉 All Christie Projector plugin tests passed!');

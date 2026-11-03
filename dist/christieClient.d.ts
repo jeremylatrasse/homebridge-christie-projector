@@ -60,6 +60,14 @@ export interface LoggerLike {
  * - Queries:  `(CMD?)\r\n` or `(CMD+SUB?)\r\n`
  * - Replies:  `(CMD!<value>)` or `(CMD!<value> "<description>")`
  */
+/**
+ * Validates that an IPv4 address has exactly 4 octets between 0 and 255.
+ * Also permits standard RFC 1123 hostnames (e.g. christie.local).
+ */
+export declare function validateChristieHost(host: string): {
+    valid: boolean;
+    reason?: string;
+};
 export declare class ChristieClient extends EventEmitter {
     private readonly log;
     private socket;
@@ -253,5 +261,5 @@ export declare class ChristieClient extends EventEmitter {
     querySystemStatus(): void;
     queryProjectorInfo(): void;
     queryErrors(): void;
-    private sendWakeOnLan;
+    sendWakeOnLan(macAddress: string): Promise<void>;
 }

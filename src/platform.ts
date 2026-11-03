@@ -9,7 +9,7 @@ import {
 } from 'homebridge';
 
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings';
-import { ChristieClient } from './christieClient';
+import { ChristieClient, validateChristieHost } from './christieClient';
 import {
   ChristieProjectorAccessory,
   ChristieDeviceConfig,
@@ -73,6 +73,11 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
 
       const host = typeof raw.host === 'string' ? raw.host.trim() : '';
       if (host) {
+        const validation = validateChristieHost(host);
+        if (!validation.valid) {
+          this.log.error(`Skipping Christie device "${raw.name || host}" — ${validation.reason}`);
+          continue;
+        }
         validDevices.push({
           ...raw,
           host,
