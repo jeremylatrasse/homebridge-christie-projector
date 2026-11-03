@@ -1,0 +1,80 @@
+#!/bin/zsh
+# Automatically increments the patch version in package.json & package-lock.json
+# when new changes are committed to be pushed to GitHub.
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Ensure no Xcode-specific files are ever staged or committed to GitHub
+XCODE_STAGED=($(git diff --cached --name-only | grep -E '(\.xcodeproj/|\.xcworkspace/|\.pbxproj$|/Xcode/|\.xcplugincache$|CachedSpecifications-|xcuserdata/|DerivedData/)' || true))
+if [ ${#XCODE_STAGED[@]} -gt 0 ]; then
+  echo "Unstaging local-only Xcode files from commit: ${XCODE_STAGED[*]}"
+  git rm --cached -f --quiet -- "${XCODE_STAGED[@]}" 2>/dev/null || git reset -q HEAD -- "${XCODE_STAGED[@]}" || true
+fi
+
+if [ "${CHRISTIE_SKIP_VERSION_BUMP:-0}" = "1" ]; then
+  exit 0
+fi
+
+setopt +o nomatch 2>/dev/null || true
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.volta/bin:$HOME/.fnm/current/bin:$HOME/.local/share/fnm/aliases/default/bin:$HOME/.asdf/shims:/opt/local/bin:$PATH"
+for d in $HOME/.nvm/versions/node/*/bin(N) /opt/homebrew/opt/node*/bin(N) /usr/local/opt/node*/bin(N); do
+  [ -d "$d" ] && export PATH="$d:$PATH"
+done
+
+# If package.json version is already modified in the staged commit, do not bump again
+if git diff --cached -U0 -- package.json | grep -q '^[+-][[:space:]]*"version"'; then
+  exit 0
+fi
+
+if command -v node >/dev/null 2>&1; then
+  # Check if local version is already ahead of origin/main
+  REMOTE_VER=""
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    REMOTE_VER=$(git show origin/main:package.json 2>/dev/null | node -e '
+      let d = "";
+      process.stdin.on("data", c => d += c);
+      process.stdin.on("end", () => {
+        try { process.stdout.write(JSON.parse(d).version || ""); } catch {}
+      });
+    ' || true)
+  fi
+
+  CURRENT_VER=$(node -p "require('./package.json').version" 2>/dev/null || echo "")
+
+  if [ -n "$REMOTE_VER" ] && [ -n "$CURRENT_VER" ] && [ "$CURRENT_VER" != "$REMOTE_VER" ]; then
+    # Version has already been incremented since the last push to origin/main
+    exit 0
+  fi
+
+  NEW_VER=$(node -e '
+    const fs = require("fs");
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    const parts = (pkg.version || "1.0.0").split(".").map(Number);
+    parts[2] = (parts[2] || 0) + 1;
+    const nextVer = parts.join(".");
+    pkg.version = nextVer;
+    fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+    if (fs.existsSync("package-lock.json")) {
+      const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+      lock.version = nextVer;
+      if (lock.packages && lock.packages[""]) {
+        lock.packages[""].version = nextVer;
+      }
+      fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
+    }
+    process.stdout.write(nextVer);
+  ')
+  echo "Auto-bumped plugin version to v${NEW_VER}"
+
+  # Rebuild dist/ if tsc is present so dist/ stays in sync with src/
+  if [ -f "./node_modules/.bin/tsc" ]; then
+    node ./node_modules/.bin/tsc -p tsconfig.json --pretty false
+    git add dist/
+  fi
+
+  git add package.json
+  [ -f "package-lock.json" ] && git add package-lock.json
+fi

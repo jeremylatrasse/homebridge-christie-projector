@@ -1,0 +1,365 @@
+{
+  "pluginAlias": "ChristieProjector",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Control Christie Digital projectors over Ethernet TCP/IP (Port 3002) using the Christie ASCII Serial API.",
+  "footerDisplay": "For documentation and a full reference of Christie Serial API commands, visit https://github.com/jeremylatrasse/homebridge-christie-projector",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Platform Name",
+        "type": "string",
+        "default": "Christie Projector",
+        "required": true
+      },
+      "devices": {
+        "title": "Christie Projectors",
+        "type": "array",
+        "items": {
+          "title": "Projector",
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Projector Name",
+              "type": "string",
+              "default": "Christie Projector",
+              "description": "Display name for the projector in Apple Home."
+            },
+            "host": {
+              "title": "IP Address or Hostname",
+              "type": "string",
+              "placeholder": "172.16.1.247",
+              "description": "IPv4 address or hostname of the Christie projector on your local network."
+            },
+            "port": {
+              "title": "TCP Port",
+              "type": "integer",
+              "default": 3002,
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Christie Serial-over-Ethernet TCP port (default is 3002)."
+            },
+            "pollInterval": {
+              "title": "Polling Interval (Seconds)",
+              "type": "integer",
+              "default": 10,
+              "minimum": 2,
+              "maximum": 300,
+              "description": "Interval in seconds to poll power `(PWR?)`, shutter `(SHU?)`, and input `(SIN?)` state."
+            },
+            "cooldownGraceSeconds": {
+              "title": "Power Transition / Cooldown Grace Window (Seconds)",
+              "type": "integer",
+              "default": 60,
+              "minimum": 5,
+              "maximum": 300,
+              "description": "Prevents premature state snap-back while the projector is warming up or cooling down."
+            },
+            "treatCode10AsOn": {
+              "title": "Treat `(PWR!10)` as Power ON",
+              "type": "boolean",
+              "default": true,
+              "description": "Matches `(PWR!10)` as Power ON (unless actively cooling down after Power Off), alongside standard `(PWR!001)` / `(PWR!1)`."
+            },
+            "mac": {
+              "title": "MAC Address (Optional Wake-on-LAN)",
+              "type": "string",
+              "placeholder": "00:11:22:33:44:55",
+              "description": "Optional MAC address to send a Wake-on-LAN packet when powering on."
+            },
+            "inputCommandType": {
+              "title": "Input Selection Command Type",
+              "type": "string",
+              "default": "SIN",
+              "oneOf": [
+                { "title": "Standard Input — (SIN <id>)", "enum": ["SIN"] },
+                { "title": "Main Window Input — (SIN+MAIN <id>)", "enum": ["SIN+MAIN"] },
+                { "title": "Channel Preset — (CHA <id>)", "enum": ["CHA"] }
+              ],
+              "description": "Christie command code used when selecting inputs in the HomeKit Television input picker."
+            },
+            "enablePowerSwitch": {
+              "title": "Expose Dedicated Power Switch Tile",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes an additional standard Switch tile for projector power `(PWR 1)` / `(PWR 0)` alongside the Television control."
+            },
+            "enableShutterSwitch": {
+              "title": "Expose Shutter / Picture Mute Switch `(SHU)`",
+              "type": "boolean",
+              "default": true,
+              "description": "Exposes a Switch tile to close `(SHU 1)` or open `(SHU 0)` the projector shutter / picture mute."
+            },
+            "enableFreezeSwitch": {
+              "title": "Expose Image Freeze Switch `(FRZ)`",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes a Switch tile to freeze `(FRZ 1)` or unfreeze `(FRZ 0)` the projected image."
+            },
+            "enableOsdSwitch": {
+              "title": "Expose On-Screen Display Switch `(OSD)`",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes a Switch tile to show `(OSD 1)` or hide `(OSD 0)` the projector on-screen menu/display."
+            },
+            "enablePipSwitch": {
+              "title": "Expose Picture-in-Picture Switch `(PIP)`",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes a Switch tile to toggle Picture-in-Picture `(PIP 1)` / `(PIP 0)`."
+            },
+            "enableAutoSetupSwitch": {
+              "title": "Expose Auto Setup Button `(ASU 1)`",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes a momentary Switch tile to trigger automatic image setup `(ASU 1)`."
+            },
+            "enableLensCalibrateSwitch": {
+              "title": "Expose Lens Calibrate / Home Button `(LCB 1)`",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes a momentary Switch tile to calibrate motorized lens motors to home `(LCB 1)`."
+            },
+            "enableLightPowerSlider": {
+              "title": "Expose Laser / Lamp Output Power Slider `(LPW)`",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes a 0–100% slider to adjust laser/lamp power `(LPW <level>)`."
+            },
+            "lightSliderType": {
+              "title": "Laser / Lamp Power Slider Service Type",
+              "type": "string",
+              "default": "lightbulb",
+              "oneOf": [
+                { "title": "Lightbulb (Brightness Slider)", "enum": ["lightbulb"] },
+                { "title": "Fan (Rotation Speed Slider)", "enum": ["fan"] },
+                { "title": "Disabled", "enum": ["none"] }
+              ]
+            },
+            "inputs": {
+              "title": "Input Sources `(SIN / CHA)`",
+              "type": "array",
+              "description": "Only inputs given a name here will be added to the projector's Input Picker in Apple Home.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "title": "Input or Channel Number",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 999
+                  },
+                  "name": {
+                    "title": "Input Name",
+                    "type": "string",
+                    "placeholder": "HDMI 1"
+                  },
+                  "type": {
+                    "title": "Connector Type",
+                    "type": "string",
+                    "default": "HDMI",
+                    "enum": ["HDMI", "DISPLAYPORT", "DVI", "SDI", "HDBASET", "OTHER"]
+                  },
+                  "commandType": {
+                    "title": "Command Override (Optional)",
+                    "type": "string",
+                    "enum": ["SIN", "SIN+MAIN", "SIN+PIP", "CHA"]
+                  }
+                }
+              }
+            },
+            "channels": {
+              "title": "Channel Preset Switches `(CHA)`",
+              "type": "array",
+              "description": "Optional one-tap Switch tiles to recall Christie Channel setups `(CHA <id>)`.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "title": "Channel Number",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 999
+                  },
+                  "name": {
+                    "title": "Channel Switch Name",
+                    "type": "string",
+                    "placeholder": "Cinema 2.39"
+                  }
+                }
+              }
+            },
+            "lensPresets": {
+              "title": "Lens Memory / Aspect Ratio Switches `(ILF / SZE)`",
+              "type": "array",
+              "description": "Optional one-tap Switch tiles to recall Intelligent Lens Memory `(ILF <id>)` or Size/Aspect Mode `(SZE <id>)`.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "title": "Preset Slot / Mode Number",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 99
+                  },
+                  "name": {
+                    "title": "Preset Switch Name",
+                    "type": "string",
+                    "placeholder": "Scope 2.40"
+                  },
+                  "commandType": {
+                    "title": "Command Code",
+                    "type": "string",
+                    "default": "ILF",
+                    "oneOf": [
+                      { "title": "Intelligent Lens File — (ILF <id>)", "enum": ["ILF"] },
+                      { "title": "Lens Memory Load — (LML <id>)", "enum": ["LML"] },
+                      { "title": "Size / Aspect Ratio Mode — (SZE <id>)", "enum": ["SZE"] }
+                    ]
+                  }
+                }
+              }
+            },
+            "testPatterns": {
+              "title": "Internal Test Pattern Switches `(ITP)`",
+              "type": "array",
+              "description": "Optional Switch tiles to toggle internal test patterns `(ITP <id>)` on and `(ITP 0)` off.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "title": "Pattern ID",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 99
+                  },
+                  "name": {
+                    "title": "Pattern Switch Name",
+                    "type": "string",
+                    "placeholder": "Grid Pattern"
+                  }
+                }
+              }
+            },
+            "customCommands": {
+              "title": "Custom Christie Command Switches",
+              "type": "array",
+              "description": "Create custom HomeKit switches for any Christie Serial API command.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "title": "Switch Name",
+                    "type": "string",
+                    "placeholder": "GAMMA 2.4"
+                  },
+                  "onCommand": {
+                    "title": "ON Command",
+                    "type": "string",
+                    "placeholder": "(GAM 2.4)"
+                  },
+                  "offCommand": {
+                    "title": "OFF Command (Optional)",
+                    "type": "string",
+                    "placeholder": "(GAM 2.2)"
+                  },
+                  "momentary": {
+                    "title": "Momentary Push Button",
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "layout": [
+    {
+      "type": "fieldset",
+      "title": "General Settings",
+      "items": ["name"]
+    },
+    {
+      "key": "devices",
+      "type": "array",
+      "buttonText": "Add Christie Projector",
+      "items": [
+        "devices[].name",
+        "devices[].host",
+        "devices[].port",
+        "devices[].pollInterval",
+        "devices[].cooldownGraceSeconds",
+        "devices[].treatCode10AsOn",
+        "devices[].mac",
+        "devices[].inputCommandType",
+        {
+          "type": "help",
+          "helpvalue": "<h5>Projector Controls & Switches</h5><p>Select which built-in Christie projector functions to expose as tiles in Apple Home.</p>"
+        },
+        "devices[].enableShutterSwitch",
+        "devices[].enablePowerSwitch",
+        "devices[].enableFreezeSwitch",
+        "devices[].enableOsdSwitch",
+        "devices[].enablePipSwitch",
+        "devices[].enableAutoSetupSwitch",
+        "devices[].enableLensCalibrateSwitch",
+        "devices[].enableLightPowerSlider",
+        "devices[].lightSliderType",
+        {
+          "key": "devices[].inputs",
+          "type": "array",
+          "buttonText": "Add Input Source",
+          "items": [
+            "devices[].inputs[].id",
+            "devices[].inputs[].name",
+            "devices[].inputs[].type",
+            "devices[].inputs[].commandType"
+          ]
+        },
+        {
+          "key": "devices[].channels",
+          "type": "array",
+          "buttonText": "Add Channel Switch",
+          "items": [
+            "devices[].channels[].id",
+            "devices[].channels[].name"
+          ]
+        },
+        {
+          "key": "devices[].lensPresets",
+          "type": "array",
+          "buttonText": "Add Lens / Aspect Preset Switch",
+          "items": [
+            "devices[].lensPresets[].id",
+            "devices[].lensPresets[].name",
+            "devices[].lensPresets[].commandType"
+          ]
+        },
+        {
+          "key": "devices[].testPatterns",
+          "type": "array",
+          "buttonText": "Add Test Pattern Switch",
+          "items": [
+            "devices[].testPatterns[].id",
+            "devices[].testPatterns[].name"
+          ]
+        },
+        {
+          "key": "devices[].customCommands",
+          "type": "array",
+          "buttonText": "Add Custom Command Switch",
+          "items": [
+            "devices[].customCommands[].name",
+            "devices[].customCommands[].onCommand",
+            "devices[].customCommands[].offCommand",
+            "devices[].customCommands[].momentary"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+name: Bump Version on Push
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !startsWith(github.event.head_commit.message, 'chore(release):')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check and increment version if not already bumped
+        run: |
+          CURRENT_VER=$(node -p "require('./package.json').version")
+          BEFORE_SHA="${{ github.event.before }}"
+          if git cat-file -e "${BEFORE_SHA}:package.json" 2>/dev/null; then
+            PREV_VER=$(git show "${BEFORE_SHA}:package.json" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).version));")
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+            PREV_VER=$(git show HEAD~1:package.json | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).version));")
+          else
+            PREV_VER=""
+          fi
+
+          echo "Previous version: ${PREV_VER:-none}, Current version: ${CURRENT_VER}"
+
+          if [ "$CURRENT_VER" != "$PREV_VER" ] && [ -n "$PREV_VER" ]; then
+            echo "Version was already incremented (${PREV_VER} -> ${CURRENT_VER}). Skipping automatic bump."
+            exit 0
+          fi
+
+          NEW_VER=$(npm version patch --no-git-tag-version)
+          echo "Bumped version to ${NEW_VER}"
+
+          npm ci
+          npm run build
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json dist/
+          git commit -m "chore(release): bump version to ${NEW_VER} [skip ci]"
+          git push origin HEAD:${GITHUB_REF_NAME}
