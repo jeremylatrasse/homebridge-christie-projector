@@ -261,4 +261,44 @@ assert.equal(
 );
 console.log('✓ config.schema.json validation rules passed');
 
+// 6. Test Heartbeat State Machine (starts only on ON command, single log per state transition)
+const infoLogs = [];
+const warnLogs = [];
+const hbClient = new ChristieClient(
+  {
+    host: '172.16.1.247',
+    port: 3002,
+    pollInterval: 10,
+    cooldownGraceSeconds: 5,
+  },
+  {
+    info: (m) => infoLogs.push(m),
+    warn: (m) => warnLogs.push(m),
+    error: () => {},
+    debug: () => {},
+  },
+);
+hbClient.start();
+assert.equal(hbClient['heartbeatActive'], false, 'Heartbeat must not start before ON command');
+assert.equal(infoLogs.length, 0);
+assert.equal(warnLogs.length, 0);
+
+hbClient['heartbeatActive'] = true;
+hbClient['expectedPowerState'] = 'on';
+hbClient['heartbeatLogState'] = 'awaiting-success';
+hbClient.handleIncomingData('(PWR!001 "On")\r\n(PWR!001 "On")\r\n');
+assert.equal(infoLogs.length, 1, 'Should write only one log entry for successful heartbeat in ON state');
+
+hbClient['recordHeartbeatFailure']();
+hbClient['recordHeartbeatFailure']();
+assert.equal(warnLogs.length, 1, 'Should write only one log entry for failed heartbeat in ON state');
+
+hbClient['expectedPowerState'] = 'off';
+hbClient['heartbeatLogState'] = 'awaiting-expected-failure';
+hbClient['recordHeartbeatFailure']();
+hbClient['recordHeartbeatFailure']();
+assert.equal(infoLogs.length, 2, 'Should write only one log entry for failed heartbeat in expected OFF state');
+hbClient.stop();
+console.log('✓ Heartbeat state machine tests passed');
+
 console.log('\n🎉 All Christie Projector plugin tests passed!');

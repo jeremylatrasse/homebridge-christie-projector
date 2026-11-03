@@ -70,9 +70,16 @@ export declare class ChristieClient extends EventEmitter {
     private reconnectTimer?;
     private pollTimer?;
     private transitionTimer?;
+    private connectTimeoutTimer?;
     private powerTransitionTarget;
     private powerTransitionUntil;
     private awaitingResponse;
+    private lastDataReceivedAt;
+    private lastProbeSentAt;
+    private heartbeatActive;
+    private expectedPowerState;
+    private heartbeatLogState;
+    private onCommandSentAt;
     readonly config: Required<ChristieClientConfig>;
     state: ChristieState;
     constructor(config: ChristieClientConfig, log: LoggerLike);
@@ -80,6 +87,9 @@ export declare class ChristieClient extends EventEmitter {
     stop(): void;
     restart(): void;
     private clearTimers;
+    private beginHeartbeatProbing;
+    private recordHeartbeatSuccess;
+    private recordHeartbeatFailure;
     isConnected(): boolean;
     /**
      * Formats a Christie ASCII command ensuring enclosing parentheses `(...)`.
