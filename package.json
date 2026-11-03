@@ -1,6 +1,6 @@
 {
   "name": "homebridge-christie-projector",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Homebridge dynamic platform plugin for Christie Digital projectors over Ethernet TCP/IP (Port 3002).",
   "license": "Apache-2.0",
   "repository": {
@@ -39,15 +39,15 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "compile": "tsc",
     "watch": "tsc --watch",
     "check": "tsc --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "test": "npm run build && node test-christie.mjs",
+    "test": "npm run compile && node test-christie.mjs",
     "bump": "npm version patch --no-git-tag-version",
-    "release": "npm run bump && npm run build && node test-christie.mjs",
+    "release": "npm run bump && npm run compile && node test-christie.mjs",
     "hooks": "make hooks 2>/dev/null || true",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run compile"
   },
   "dependencies": {},
   "devDependencies": {

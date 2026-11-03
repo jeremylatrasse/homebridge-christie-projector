@@ -48,7 +48,7 @@ jobs:
           echo "Bumped version to ${NEW_VER}"
 
           npm ci
-          npm run build
+          npm run compile
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
