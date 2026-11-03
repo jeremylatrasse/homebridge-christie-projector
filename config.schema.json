@@ -19,6 +19,9 @@
         "items": {
           "title": "Projector",
           "type": "object",
+          "required": [
+            "host"
+          ],
           "properties": {
             "name": {
               "title": "Projector Name",
@@ -29,6 +32,7 @@
             "host": {
               "title": "IP Address or Hostname",
               "type": "string",
+              "required": true,
               "placeholder": "172.16.1.247",
               "description": "IPv4 address or hostname of the Christie projector on your local network."
             },

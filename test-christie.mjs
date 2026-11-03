@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { ChristieClient } from './dist/christieClient.js';
 import { sanitizeHomeKitName, isExplicitlyNamed } from './dist/platformAccessory.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './dist/settings.js';
+import { ChristieProjectorPlatform } from './dist/platform.js';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const schema = JSON.parse(readFileSync(new URL('./config.schema.json', import.meta.url), 'utf8'));
@@ -234,6 +235,16 @@ console.log('✓ HomeKit name sanitization & explicit naming filter passed');
 
 // 5. Verify config.schema.json allows saving with IP address and optional arrays
 const deviceProps = schema.schema.properties.devices.items.properties;
+assert.deepEqual(
+  schema.schema.properties.devices.items.required,
+  ['host'],
+  'devices items must require host so unconfigured cards cannot be saved in Homebridge UI',
+);
+assert.equal(
+  deviceProps.host.required,
+  true,
+  'host property must be marked required: true',
+);
 assert.equal(
   deviceProps.host.format,
   undefined,
@@ -300,5 +311,126 @@ hbClient['recordHeartbeatFailure']();
 assert.equal(infoLogs.length, 2, 'Should write only one log entry for failed heartbeat in expected OFF state');
 hbClient.stop();
 console.log('✓ Heartbeat state machine tests passed');
+
+// 7. Test Device Discovery handles unconfigured UI placeholders cleanly without false warnings
+const testWarnings = [];
+const testDebugs = [];
+const publishedAccessories = [];
+const mockPlatformLog = {
+  info: () => {},
+  warn: (msg) => testWarnings.push(msg),
+  error: () => {},
+  debug: (msg) => testDebugs.push(msg),
+};
+
+class MockCharacteristic {
+  onGet() { return this; }
+  onSet() { return this; }
+  updateValue() { return this; }
+  setProps() { return this; }
+}
+
+class MockService {
+  constructor() {
+    this.char = new MockCharacteristic();
+  }
+  setCharacteristic() { return this; }
+  getCharacteristic() { return this.char; }
+  setPrimaryService() { return this; }
+  addLinkedService() { return this; }
+  removeLinkedService() { return this; }
+  addOptionalCharacteristic() { return this; }
+}
+
+const mockTelevisionSpeakerService = class extends MockService {};
+
+const mockApi = {
+  hap: {
+    Service: {
+      AccessoryInformation: class extends MockService {},
+      Television: class extends MockService {},
+      TelevisionSpeaker: mockTelevisionSpeakerService,
+      InputSource: class extends MockService {},
+      Switch: class extends MockService {},
+      Lightbulb: class extends MockService {},
+      Fan: class extends MockService {},
+    },
+    Characteristic: {
+      Name: 'Name',
+      Manufacturer: 'Manufacturer',
+      Model: 'Model',
+      SerialNumber: 'SerialNumber',
+      FirmwareRevision: 'FirmwareRevision',
+      Active: { ACTIVE: 1, INACTIVE: 0 },
+      ActiveIdentifier: 'ActiveIdentifier',
+      ConfiguredName: 'ConfiguredName',
+      SleepDiscoveryMode: { ALWAYS_DISCOVERABLE: 1 },
+      ClosedCaptions: 'ClosedCaptions',
+      TargetMediaState: 'TargetMediaState',
+      PictureMode: 'PictureMode',
+      PowerModeSelection: 'PowerModeSelection',
+      RemoteKey: 'RemoteKey',
+      IsConfigured: { CONFIGURABLE: 1 },
+      CurrentVisibilityState: { SHOWN: 1 },
+      Identifier: 'Identifier',
+      InputSourceType: { HDMI: 3 },
+      On: 'On',
+      Brightness: 'Brightness',
+      RotationSpeed: 'RotationSpeed',
+    },
+    uuid: {
+      generate: (seed) => `uuid-${seed}`,
+    },
+    Categories: {
+      TELEVISION: 18,
+    },
+  },
+  platformAccessory: class {
+    constructor(displayName, uuid, category) {
+      this.displayName = displayName;
+      this.UUID = uuid;
+      this.category = category;
+      this.services = [];
+    }
+    getService(serviceType) {
+      if (serviceType === mockTelevisionSpeakerService) {
+        return null;
+      }
+      return new MockService();
+    }
+    getServiceById() { return null; }
+    addService() { return new MockService(); }
+    removeService() { return this; }
+  },
+  on: () => {},
+  publishExternalAccessories: (pluginName, accs) => publishedAccessories.push(...accs),
+  unregisterPlatformAccessories: () => {},
+};
+
+const testPlatform = new ChristieProjectorPlatform(
+  mockPlatformLog,
+  {
+    platform: 'ChristieProjector',
+    devices: [
+      { name: 'Christie Projector' }, // Unconfigured placeholder created by UI
+      { name: 'Christie Projector', host: '172.16.1.247', port: 3002 }, // Valid device
+    ],
+  },
+  mockApi,
+);
+
+testPlatform.discoverDevices();
+assert.equal(publishedAccessories.length, 1, 'Only the configured projector should be published');
+assert.equal(testWarnings.length, 0, 'No warning should be logged for default unconfigured UI placeholders');
+assert(
+  testDebugs.some((d) => d.includes('Ignoring unconfigured Christie device placeholder')),
+  'Unconfigured placeholder should be logged at debug level',
+);
+
+// Clean up client sockets
+for (const c of testPlatform['clients'].values()) {
+  c.stop();
+}
+console.log('✓ Device discovery placeholder filtering passed');
 
 console.log('\n🎉 All Christie Projector plugin tests passed!');

@@ -1,6 +1,6 @@
 {
   "name": "homebridge-christie-projector",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Homebridge dynamic platform plugin for Christie Digital projectors over Ethernet TCP/IP (Port 3002).",
   "license": "Apache-2.0",
   "repository": {

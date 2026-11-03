@@ -60,14 +60,50 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
    * Discovers and initializes configured Christie Digital projectors.
    */
   discoverDevices(): void {
+    const rawDevices: ChristieDeviceConfig[] = Array.isArray(this.config.devices)
+      ? (this.config.devices as ChristieDeviceConfig[])
+      : [];
+
+    const validDevices: ChristieDeviceConfig[] = [];
+
+    for (const raw of rawDevices) {
+      if (!raw || typeof raw !== 'object') {
+        continue;
+      }
+
+      const host = typeof raw.host === 'string' ? raw.host.trim() : '';
+      if (host) {
+        validDevices.push({
+          ...raw,
+          host,
+        });
+      } else {
+        const rawName = typeof raw.name === 'string' ? raw.name.trim() : '';
+        const isCustomDevice =
+          (rawName !== '' && rawName !== 'Christie Projector') ||
+          Boolean(raw.mac) ||
+          Boolean(raw.inputs?.length) ||
+          Boolean(raw.channels?.length) ||
+          Boolean(raw.lensPresets?.length) ||
+          Boolean(raw.testPatterns?.length) ||
+          Boolean(raw.customCommands?.length);
+
+        if (isCustomDevice) {
+          this.log.warn(`Skipping Christie device "${rawName || 'Unknown'}" because no host/IP is configured.`);
+        } else {
+          this.log.debug('Ignoring unconfigured Christie device placeholder with no host/IP.');
+        }
+      }
+    }
+
     const devices: ChristieDeviceConfig[] = [];
 
-    if (Array.isArray(this.config.devices) && this.config.devices.length > 0) {
-      devices.push(...(this.config.devices as ChristieDeviceConfig[]));
+    if (validDevices.length > 0) {
+      devices.push(...validDevices);
     } else if (typeof this.config.host === 'string' && this.config.host.trim().length > 0) {
       devices.push({
         name: this.config.name || 'Christie Projector',
-        host: this.config.host,
+        host: this.config.host.trim(),
         port: this.config.port,
         mac: this.config.mac,
         pollInterval: this.config.pollInterval ?? this.config.interval,
@@ -106,11 +142,6 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
     }
 
     for (const device of devices) {
-      if (!device.host) {
-        this.log.warn(`Skipping Christie device "${device.name || 'Unknown'}" because no host/IP is configured.`);
-        continue;
-      }
-
       const deviceName = sanitizeHomeKitName(device.name || 'Christie Projector', 'Christie Projector');
       const port = device.port || 3002;
 
