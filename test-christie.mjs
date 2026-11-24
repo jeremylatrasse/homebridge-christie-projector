@@ -69,6 +69,12 @@ assert.equal(client.state.powerStatus, 'WARMING');
 client.handleIncomingData('(PWR!010 "Cooling Down")');
 assert.equal(client.state.power, false);
 assert.equal(client.state.powerStatus, 'COOLING');
+
+// Confirm standby finishes cooldown
+client.handleIncomingData('(PWR!000 "Standby")');
+assert.equal(client.state.power, false);
+assert.equal(client.state.powerStatus, 'OFF');
+assert.equal(client.isCooldownActive(), false);
 console.log('✓ Power status parsing ((PWR!000), (PWR!001), (PWR!10), (PWR!11)) passed');
 
 // 2. Test back-to-back parenthesized frames without newlines
@@ -99,9 +105,11 @@ client.powerOff();
 assert.equal(sentCommands.pop(), '(PWR 0)\r\n');
 assert.equal(client.state.power, false);
 
-// While in powerOff cooldown grace window, receiving (PWR!10) must NOT snap power back to ON
+// While in powerOff cooldown grace window, receiving repeated (PWR!10) must NOT snap power back to ON
 client.handleIncomingData('(PWR!10)\r\n');
-assert.equal(client.state.power, false, 'Power must remain OFF during cooldown transition even if PWR!10 is received');
+assert.equal(client.state.power, false, 'Power must remain OFF during cooldown transition on first PWR!10');
+client.handleIncomingData('(PWR!10)\r\n');
+assert.equal(client.state.power, false, 'Power must remain OFF during cooldown transition on repeated PWR!10');
 client.stop(); // clear transition timer
 
 // Re-attach mock socket for command tests
@@ -113,6 +121,9 @@ client.isConnecting = false;
 
 client.queryPower();
 assert.equal(sentCommands.pop(), '(PWR?)\r\n');
+
+client.queryCooldown();
+assert.equal(sentCommands.pop(), '(PWR+COOL?)\r\n');
 
 client.setStandbyMode(true);
 assert.equal(sentCommands.pop(), '(PWR+STBM 1)\r\n');
@@ -251,17 +262,17 @@ assert.deepEqual(
   'devices items must require host via Draft-4+ required array so unconfigured cards cannot be saved in Homebridge UI',
 );
 function assertNoBooleanRequired(node, path) {
-  if (!node || typeof node !== "object") return;
+  if (!node || typeof node !== 'object') return;
   assert.notStrictEqual(
     typeof node.required,
-    "boolean",
+    'boolean',
     `Draft-3 boolean required is invalid in JSON Schema Draft 4+ at ${path}`,
   );
   for (const [k, v] of Object.entries(node)) {
-    if (v && typeof v === "object") assertNoBooleanRequired(v, `${path}.${k}`);
+    if (v && typeof v === 'object') assertNoBooleanRequired(v, `${path}.${k}`);
   }
 }
-assertNoBooleanRequired(schema.schema, "schema");
+assertNoBooleanRequired(schema.schema, 'schema');
 assert.equal(
   deviceProps.host.format,
   undefined,
@@ -676,7 +687,6 @@ for (const c of dupPlatform2['clients'].values()) c.stop();
 ChristieProjectorPlatform.resetPublishedExternalUuids();
 console.log('✓ Duplicate device & platform address collision guard passed');
 
-
 // 13. Power-ON standalone transmission, whitespace onCommand fallback & dropped-socket retry
 {
   const firstChunks = [];
@@ -684,30 +694,30 @@ console.log('✓ Duplicate device & platform address collision guard passed');
   const retryServer = net.createServer((socket) => {
     retryAttempts += 1;
     const attempt = retryAttempts;
-    socket.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
+    socket.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
       firstChunks.push({ attempt, text });
       if (attempt === 1) {
         // Simulate projector closing socket before acknowledging (PWR 1)
         socket.destroy();
         return;
       }
-      if (text.includes("(PWR 1)")) {
+      if (text.includes('(PWR 1)')) {
         socket.write('(PWR!001 "On")\r\n');
       }
     });
   });
 
-  await new Promise((resolve) => retryServer.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => retryServer.listen(0, '127.0.0.1', resolve));
   const retryPort = retryServer.address().port;
   const powerInfoLogs = [];
   const powerWarnLogs = [];
   try {
     const retryClient = new ChristieClient(
       {
-        host: "127.0.0.1",
+        host: '127.0.0.1',
         port: retryPort,
-        onCommand: "   ", // whitespace-only override must fall back to (PWR 1)
+        onCommand: '   ', // whitespace-only override must fall back to (PWR 1)
         pollInterval: 60,
         reconnectInterval: 0.15,
         cooldownGraceSeconds: 5,
@@ -719,28 +729,28 @@ console.log('✓ Duplicate device & platform address collision guard passed');
         debug: () => {},
       },
     );
-    assert.strictEqual(retryClient.config.onCommand, "(PWR 1)", "Whitespace-only onCommand must fall back to (PWR 1)");
+    assert.strictEqual(retryClient.config.onCommand, '(PWR 1)', 'Whitespace-only onCommand must fall back to (PWR 1)');
     retryClient.start();
     await retryClient.powerOn();
     await new Promise((resolve) => setTimeout(resolve, 450));
-    assert.ok(retryAttempts >= 2, "Client should reconnect after dropped unacknowledged power-on socket");
+    assert.ok(retryAttempts >= 2, 'Client should reconnect after dropped unacknowledged power-on socket');
     assert.strictEqual(
       firstChunks[0].text.trim(),
-      "(PWR 1)",
-      "Initial TCP write on powerOn must send standalone (PWR 1) without coalesced status queries",
+      '(PWR 1)',
+      'Initial TCP write on powerOn must send standalone (PWR 1) without coalesced status queries',
     );
     assert.ok(
-      firstChunks.some((c) => c.attempt >= 2 && c.text.includes("(PWR 1)")),
-      "Client must retry (PWR 1) on reconnect when initial socket drops without reply",
+      firstChunks.some((c) => c.attempt >= 2 && c.text.includes('(PWR 1)')),
+      'Client must retry (PWR 1) on reconnect when initial socket drops without reply',
     );
-    assert.strictEqual(retryClient.state.power, true, "Power state should stay ON during retry and confirm ON");
+    assert.strictEqual(retryClient.state.power, true, 'Power state should stay ON during retry and confirm ON');
     assert.ok(
-      powerInfoLogs.some((m) => m.includes("Sending power ON command -> (PWR 1)")),
-      "powerOn must log the target command at info level",
+      powerInfoLogs.some((m) => m.includes('Sending power ON command -> (PWR 1)')),
+      'powerOn must log the target command at info level',
     );
     assert.ok(
-      powerInfoLogs.some((m) => m.includes("Transmitted (PWR 1)")),
-      "powerOn must log actual socket transmission at info level",
+      powerInfoLogs.some((m) => m.includes('Transmitted (PWR 1)')),
+      'powerOn must log actual socket transmission at info level',
     );
     retryClient.stop();
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -748,6 +758,261 @@ console.log('✓ Duplicate device & platform address collision guard passed');
     retryServer.close();
   }
 }
-console.log("✓ Power-ON standalone transmission & dropped-socket retry tests passed");
+console.log('✓ Power-ON standalone transmission & dropped-socket retry tests passed');
+
+// 14. Power-OFF immediate HomeKit update & cooldown stability across repeated (PWR!10) replies
+{
+  const coolInfoLogs = [];
+  const coolWarnLogs = [];
+  const powerChanges = [];
+  const txCmds = [];
+  const coolClient = new ChristieClient(
+    {
+      host: '172.16.1.247',
+      port: 3002,
+      pollInterval: 60,
+      cooldownGraceSeconds: 60,
+      treatCode10AsOn: true,
+    },
+    {
+      info: (m) => coolInfoLogs.push(m),
+      warn: (m) => coolWarnLogs.push(m),
+      error: () => {},
+      debug: () => {},
+    },
+  );
+  coolClient.socket = {
+    destroyed: false,
+    write: (data, cb) => {
+      txCmds.push(data.trim());
+      if (cb) cb(null);
+    },
+  };
+  coolClient.isConnecting = false;
+  coolClient.on('powerChange', (val) => powerChanges.push(val));
+
+  // Start in ON state
+  coolClient.handleIncomingData('(PWR!001 "On")\r\n');
+  assert.strictEqual(coolClient.state.power, true);
+  powerChanges.length = 0;
+  coolInfoLogs.length = 0;
+
+  // User turns OFF in HomeKit -> must update HomeKit immediately to OFF
+  coolClient.powerOff();
+  assert.strictEqual(coolClient.state.power, false, 'HomeKit state must switch to OFF immediately without waiting for cooldown');
+  assert.deepStrictEqual(powerChanges, [false], 'powerChange(false) must fire immediately on powerOff');
+  assert.strictEqual(coolClient.isCooldownActive(), true);
+  assert.strictEqual(txCmds[0], '(PWR 0)');
+
+  // Even a brief stale (PWR!001) right after (PWR 0) must not snap HomeKit back to ON
+  coolClient.handleIncomingData('(PWR!001)\r\n');
+  assert.strictEqual(coolClient.state.power, false);
+
+  // Repeated (PWR!10) replies during cooldown (at +3s, +6s, +9s) must NEVER snap back or log unexpected state change
+  coolClient.handleIncomingData('(PWR!10)\r\n');
+  coolClient.handleIncomingData('(PWR!10)\r\n');
+  coolClient.handleIncomingData('(PWR!10)\r\n');
+  assert.strictEqual(coolClient.state.power, false, 'Repeated (PWR!10) during cooldown must stay OFF');
+  assert.strictEqual(coolClient.state.powerStatus, 'COOLING');
+  assert.strictEqual(coolClient.isCooldownActive(), true, '(PWR!10) must NOT clear cooldown window prematurely');
+  assert.deepStrictEqual(powerChanges, [false], 'No HomeKit snap-back to ON during cooldown');
+  assert.strictEqual(
+    coolInfoLogs.some((m) => m.includes('unexpected state change')),
+    false,
+    'Must never log unexpected state change while cooling down',
+  );
+  assert.strictEqual(
+    coolInfoLogs.some((m) => m.includes('Heartbeat failed as expected')),
+    false,
+    'Must not log Heartbeat failed while projector is actively replying (PWR!10)',
+  );
+  assert.strictEqual(coolWarnLogs.length, 0);
+
+  // Also verify (PWR+COOL?) was probed once on entering COOLING, and unsupported ERR is handled silently
+  assert.strictEqual(
+    txCmds.filter((c) => c === '(PWR+COOL?)').length,
+    1,
+    'Should probe (PWR+COOL?) once per cooldown cycle',
+  );
+  coolClient.handleIncomingData('(PWR+COOL!ERR005 "Invalid Subcode")\r\n');
+  assert.strictEqual(coolClient['cooldownQuerySupported'], false);
+
+  // Once projector reports (PWR!000), cooldown finishes cleanly
+  coolClient.handleIncomingData('(PWR!000 "Standby")\r\n');
+  assert.strictEqual(coolClient.state.power, false);
+  assert.strictEqual(coolClient.state.powerStatus, 'OFF');
+  assert.strictEqual(coolClient.isCooldownActive(), false);
+  assert.ok(
+    coolInfoLogs.some((m) => m.includes('cooldown complete')),
+    'Should log clean cooldown completion when (PWR!000) arrives',
+  );
+  coolClient.stop();
+}
+console.log('✓ Power-OFF immediate HomeKit OFF & cooldown stability tests passed');
+
+// 15. Deferred Power-ON during cooldown (timer wait, early (PWR!000), (PWR+COOL!), and cancel on powerOff)
+{
+  // Case A: Deferred powerOn waits for remaining cooldown timer before sending (PWR 1)
+  const deferredTx = [];
+  const deferredLogs = [];
+  const deferredClient = new ChristieClient(
+    {
+      host: '172.16.1.247',
+      port: 3002,
+      pollInterval: 60,
+      cooldownGraceSeconds: 0.25, // 250ms for fast unit test
+    },
+    {
+      info: (m) => deferredLogs.push(m),
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+    },
+  );
+  deferredClient.socket = {
+    destroyed: false,
+    write: (data, cb) => {
+      deferredTx.push({ cmd: data.trim(), at: Date.now() });
+      if (cb) cb(null);
+    },
+  };
+  deferredClient.isConnecting = false;
+  deferredClient['lastDataReceivedAt'] = Date.now();
+
+  const offAt = Date.now();
+  deferredClient.powerOff();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  // Request powerOn while ~170ms of cooldown remains
+  await deferredClient.powerOn();
+  assert.strictEqual(deferredClient.isPowerOnDeferred(), true, 'powerOn must defer while cooldown is active');
+  assert.strictEqual(deferredClient.state.power, true, 'HomeKit state reflects user ON intent while waiting');
+  assert.strictEqual(
+    deferredTx.some((e) => e.cmd === '(PWR 1)'),
+    false,
+    '(PWR 1) must NOT be sent immediately while cooldown is still active',
+  );
+
+  // Wait for remaining cooldown to elapse
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  assert.strictEqual(deferredClient.isPowerOnDeferred(), false, 'Deferred flag clears once cooldown expires');
+  const pwrOnEntry = deferredTx.find((e) => e.cmd === '(PWR 1)');
+  assert.ok(pwrOnEntry, '(PWR 1) must be transmitted automatically after remaining cooldown elapses');
+  assert.ok(
+    pwrOnEntry.at - offAt >= 220,
+    `(PWR 1) must wait until cooldown expires (elapsed: ${pwrOnEntry.at - offAt}ms)`,
+  );
+  deferredClient.stop();
+
+  // Case B: Early (PWR!000) standby confirmation triggers deferred powerOn immediately
+  const earlyTx = [];
+  const earlyClient = new ChristieClient(
+    {
+      host: '172.16.1.247',
+      port: 3002,
+      pollInterval: 60,
+      cooldownGraceSeconds: 60,
+    },
+    mockLog,
+  );
+  earlyClient.socket = {
+    destroyed: false,
+    write: (data, cb) => {
+      earlyTx.push(data.trim());
+      if (cb) cb(null);
+    },
+  };
+  earlyClient.isConnecting = false;
+  earlyClient['lastDataReceivedAt'] = Date.now();
+
+  earlyClient.powerOff();
+  await earlyClient.powerOn();
+  assert.strictEqual(earlyClient.isPowerOnDeferred(), true);
+  assert.strictEqual(earlyTx.includes('(PWR 1)'), false);
+
+  // Projector confirms standby early
+  earlyClient.handleIncomingData('(PWR!000 "Standby")\r\n');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.strictEqual(earlyClient.isPowerOnDeferred(), false);
+  assert.ok(earlyTx.includes('(PWR 1)'), 'Early (PWR!000) must immediately execute deferred (PWR 1)');
+  assert.strictEqual(earlyClient.state.power, true);
+  earlyClient.stop();
+
+  // Case C: CineLife (PWR+COOL!) live countdown adjusts cooldown and (PWR+COOL!0) triggers deferred powerOn
+  const cineTx = [];
+  const cineClient = new ChristieClient(
+    {
+      host: '172.16.1.247',
+      port: 3002,
+      pollInterval: 60,
+      cooldownGraceSeconds: 60,
+    },
+    mockLog,
+  );
+  cineClient.socket = {
+    destroyed: false,
+    write: (data, cb) => {
+      cineTx.push(data.trim());
+      if (cb) cb(null);
+    },
+  };
+  cineClient.isConnecting = false;
+  cineClient['lastDataReceivedAt'] = Date.now();
+
+  cineClient.powerOff();
+  cineClient.handleIncomingData('(PWR!10)\r\n');
+  cineClient.handleIncomingData('(PWR+COOL!015)\r\n');
+  assert.strictEqual(cineClient.state.cooldownRemainingSeconds, 15);
+  assert.ok(cineClient.getRemainingCooldownMs() <= 15500 && cineClient.getRemainingCooldownMs() > 13000);
+
+  await cineClient.powerOn();
+  assert.strictEqual(cineClient.isPowerOnDeferred(), true);
+  assert.strictEqual(cineTx.includes('(PWR 1)'), false);
+
+  cineClient.handleIncomingData('(PWR+COOL!000)\r\n');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.strictEqual(cineClient.isPowerOnDeferred(), false);
+  assert.ok(cineTx.includes('(PWR 1)'), '(PWR+COOL!000) must trigger deferred (PWR 1)');
+  cineClient.stop();
+
+  // Case D: Canceling deferred powerOn with powerOff preserves original cooldown without sending (PWR 1)
+  const cancelTx = [];
+  const cancelClient = new ChristieClient(
+    {
+      host: '172.16.1.247',
+      port: 3002,
+      pollInterval: 60,
+      cooldownGraceSeconds: 10,
+    },
+    mockLog,
+  );
+  cancelClient.socket = {
+    destroyed: false,
+    write: (data, cb) => {
+      cancelTx.push(data.trim());
+      if (cb) cb(null);
+    },
+  };
+  cancelClient.isConnecting = false;
+  cancelClient['lastDataReceivedAt'] = Date.now();
+
+  cancelClient.powerOff();
+  const originalCooldownUntil = cancelClient['cooldownUntil'];
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await cancelClient.powerOn();
+  assert.strictEqual(cancelClient.isPowerOnDeferred(), true);
+
+  cancelClient.powerOff();
+  assert.strictEqual(cancelClient.isPowerOnDeferred(), false, 'powerOff must cancel pending deferred powerOn');
+  assert.strictEqual(cancelClient.state.power, false);
+  assert.strictEqual(
+    cancelClient['cooldownUntil'],
+    originalCooldownUntil,
+    'Canceling deferred powerOn must preserve original cooldown deadline instead of resetting it',
+  );
+  assert.strictEqual(cancelTx.includes('(PWR 1)'), false, '(PWR 1) must never be sent after cancellation');
+  cancelClient.stop();
+}
+console.log('✓ Deferred Power-ON cooldown tests (timer, early PWR!000, PWR+COOL!, cancel) passed');
 
 console.log('\n🎉 All Christie Projector plugin tests passed!');

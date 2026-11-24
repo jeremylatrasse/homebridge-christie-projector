@@ -114,8 +114,15 @@ class ChristieClient extends node_events_1.EventEmitter {
     transitionTimer;
     connectTimeoutTimer;
     initialPollTimer;
+    deferredPowerOnTimer;
+    deferredPowerOnPending = false;
     powerTransitionTarget = null;
     powerTransitionUntil = 0;
+    lastPowerOffAt = 0;
+    cooldownUntil = 0;
+    cooldownLoggedForCycle = false;
+    cooldownQueryAttemptedForCycle = false;
+    cooldownQuerySupported = null;
     pendingPowerOnCommand = null;
     pendingPowerOnRetries = 0;
     lastPowerOnWriteAt = 0;
@@ -131,6 +138,7 @@ class ChristieClient extends node_events_1.EventEmitter {
         power: false,
         powerStatus: 'OFF',
         rawPowerCode: null,
+        cooldownRemainingSeconds: 0,
         shutterClosed: false,
         freeze: false,
         osd: true,
@@ -167,6 +175,8 @@ class ChristieClient extends node_events_1.EventEmitter {
             this.log.error(`[${config.host}] ${validation.reason}`);
             throw new Error(`[ChristieClient] ${validation.reason}`);
         }
+        const parsedCooldown = config.cooldownGraceSeconds !== undefined ? Number(config.cooldownGraceSeconds) : 60;
+        const cooldownGraceSeconds = Number.isFinite(parsedCooldown) && parsedCooldown >= 0 ? parsedCooldown : 60;
         this.config = {
             host: config.host,
             port: config.port || 3002,
@@ -174,7 +184,7 @@ class ChristieClient extends node_events_1.EventEmitter {
             pollInterval: config.pollInterval || 10,
             reconnectInterval: config.reconnectInterval || 5,
             socketTimeoutMs: config.socketTimeoutMs || 3000,
-            cooldownGraceSeconds: config.cooldownGraceSeconds !== undefined ? config.cooldownGraceSeconds : 60,
+            cooldownGraceSeconds,
             treatCode10AsOn: config.treatCode10AsOn !== undefined ? config.treatCode10AsOn : true,
             inputCommandType: config.inputCommandType || 'SIN',
             onCommand: (typeof config.onCommand === 'string' ? config.onCommand.trim() : '') || '(PWR 1)',
@@ -189,6 +199,7 @@ class ChristieClient extends node_events_1.EventEmitter {
     stop() {
         this.isDestroyed = true;
         this.heartbeatActive = false;
+        this.deferredPowerOnPending = false;
         this.clearTimers();
         this.disconnect();
     }
@@ -219,6 +230,25 @@ class ChristieClient extends node_events_1.EventEmitter {
             clearTimeout(this.initialPollTimer);
             this.initialPollTimer = undefined;
         }
+        if (this.deferredPowerOnTimer) {
+            clearTimeout(this.deferredPowerOnTimer);
+            this.deferredPowerOnTimer = undefined;
+        }
+    }
+    clearTransitionTimer() {
+        if (this.transitionTimer) {
+            clearInterval(this.transitionTimer);
+            this.transitionTimer = undefined;
+        }
+    }
+    isCooldownActive() {
+        return this.cooldownUntil > Date.now();
+    }
+    getRemainingCooldownMs() {
+        return Math.max(0, this.cooldownUntil - Date.now());
+    }
+    isPowerOnDeferred() {
+        return this.deferredPowerOnPending;
     }
     beginHeartbeatProbing() {
         this.heartbeatActive = true;
@@ -453,7 +483,8 @@ class ChristieClient extends node_events_1.EventEmitter {
     }
     handleSocketClose() {
         const prevPower = this.state.power;
-        const withinPowerOnGrace = this.powerTransitionTarget === true && Date.now() < this.powerTransitionUntil;
+        const withinPowerOnGrace = (this.powerTransitionTarget === true && Date.now() < this.powerTransitionUntil) ||
+            this.deferredPowerOnPending;
         if (this.pendingPowerOnCommand &&
             this.pendingPowerOnRetries > 0 &&
             withinPowerOnGrace &&
@@ -513,7 +544,7 @@ class ChristieClient extends node_events_1.EventEmitter {
      */
     pollStatus() {
         this.sendRaw(this.config.stateCommand);
-        if (this.state.power && this.powerTransitionTarget !== true) {
+        if (this.state.power && this.powerTransitionTarget !== true && !this.deferredPowerOnPending) {
             this.queryShutter();
             this.queryInput();
             this.queryFreeze();
@@ -577,6 +608,7 @@ class ChristieClient extends node_events_1.EventEmitter {
     /**
      * Parses the inner content of a Christie response frame, e.g.:
      * - `PWR!001` or `PWR!001 "On"` or `PWR!10` or `PWR!000 "Standby"`
+     * - `PWR+STAT!010` or `PWR+COOL!045` (CineLife / Solaria cooldown timer)
      * - `SHU!000` or `SHU!1`
      * - `SIN!001` or `SIN+MAIN!002`
      * - `CHA!101`
@@ -605,8 +637,21 @@ class ChristieClient extends node_events_1.EventEmitter {
         const description = quoteMatch && quoteMatch[2] ? quoteMatch[2].trim() : '';
         this.emit('commandReply', commandCode, valueToken, description, rawFrame);
         switch (commandCode) {
-            case 'PWR': {
+            case 'PWR':
+            case 'PWR+STAT': {
                 this.handlePowerReply(valueToken, description);
+                break;
+            }
+            case 'PWR+COOL': {
+                const remainingSec = parseInt(valueToken, 10);
+                if (!isNaN(remainingSec) && remainingSec >= 0 && /^\d+$/.test(valueToken)) {
+                    this.cooldownQuerySupported = true;
+                    this.handleCooldownTimerReply(remainingSec);
+                }
+                else {
+                    this.cooldownQuerySupported = false;
+                    this.log.debug(`[${this.config.host}] Projector does not support (PWR+COOL?) (${rawFrame}) — using configured cooldownGraceSeconds (${this.config.cooldownGraceSeconds}s).`);
+                }
                 break;
             }
             case 'SHU': {
@@ -814,10 +859,39 @@ class ChristieClient extends node_events_1.EventEmitter {
         }
     }
     /**
+     * Handles live remaining cooldown seconds reported by CineLife/Solaria `(PWR+COOL!<sec>)`.
+     */
+    handleCooldownTimerReply(remainingSec) {
+        this.state.cooldownRemainingSeconds = remainingSec;
+        this.emit('cooldownChange', remainingSec);
+        if (remainingSec > 0) {
+            const newCooldownUntil = Date.now() + remainingSec * 1000;
+            this.cooldownUntil = newCooldownUntil;
+            if (this.powerTransitionTarget === false) {
+                this.powerTransitionUntil = Math.max(this.powerTransitionUntil, newCooldownUntil);
+            }
+            if (this.deferredPowerOnPending) {
+                this.powerTransitionUntil = newCooldownUntil + this.config.cooldownGraceSeconds * 1000;
+                this.log.info(`[${this.config.host}] Projector reports ${remainingSec}s remaining in cooldown (PWR+COOL!${remainingSec}) — adjusted deferred power ON wait.`);
+                this.scheduleDeferredPowerOn(remainingSec * 1000);
+            }
+            else {
+                this.log.info(`[${this.config.host}] Projector reports ${remainingSec}s remaining in cooldown (PWR+COOL!${remainingSec}).`);
+            }
+            return;
+        }
+        // remainingSec === 0: cooldown timer completed
+        this.cooldownUntil = 0;
+        this.cooldownQueryAttemptedForCycle = false;
+        if (this.deferredPowerOnPending) {
+            this.triggerDeferredPowerOn('Projector cooldown timer reached 0s (PWR+COOL!0)');
+        }
+    }
+    /**
      * Interprets Christie `PWR!` status codes:
-     * - `0` / `00` / `000`: Standby / Power Off
+     * - `0` / `00` / `000` (and `3` on CineLife): Standby / Power Off
      * - `1` / `01` / `001`: Power On (Lamp/Laser On)
-     * - `10` / `010`: Cooling Down (or Active/On in setups matching `PWR!10` when not cooling down from powerOff)
+     * - `10` / `010`: Cooling Down (or Active/On outside cooldown when `treatCode10AsOn` is enabled)
      * - `11` / `011`: Warming Up
      * - `20`..`23` / `020`..`023`: AutoShutdown / Emergency Shutdown
      */
@@ -825,66 +899,137 @@ class ChristieClient extends node_events_1.EventEmitter {
         this.state.rawPowerCode = code;
         const numericCode = parseInt(code, 10);
         const descLower = description.toLowerCase();
+        const now = Date.now();
+        const prevPower = this.state.power;
+        const prevStatus = this.state.powerStatus;
         let newStatus = this.state.powerStatus;
-        let computedPower = this.state.power;
-        if (numericCode === 0) {
+        let rawPower = this.state.power;
+        if (numericCode === 0 || numericCode === 3) {
             newStatus = 'OFF';
-            computedPower = false;
+            rawPower = false;
         }
         else if (numericCode === 1) {
             newStatus = 'ON';
-            computedPower = true;
+            rawPower = true;
         }
         else if (numericCode === 11) {
             newStatus = 'WARMING';
-            computedPower = true;
+            rawPower = true;
         }
         else if (numericCode === 10) {
-            if (descLower.includes('cool')) {
+            const inOffOrCooldownWindow = this.isCooldownActive() ||
+                (this.powerTransitionTarget === false && now < this.powerTransitionUntil) ||
+                this.deferredPowerOnPending;
+            if (descLower.includes('cool') || inOffOrCooldownWindow) {
                 newStatus = 'COOLING';
-                computedPower = false;
-            }
-            else if (this.powerTransitionTarget === false &&
-                Date.now() < this.powerTransitionUntil) {
-                newStatus = 'COOLING';
-                computedPower = false;
+                rawPower = false;
             }
             else if (this.config.treatCode10AsOn) {
                 newStatus = 'ON';
-                computedPower = true;
+                rawPower = true;
             }
             else {
                 newStatus = 'COOLING';
-                computedPower = false;
+                rawPower = false;
             }
         }
         else if (numericCode >= 20 && numericCode <= 22) {
             newStatus = 'AUTO_SHUTDOWN';
-            computedPower = false;
+            rawPower = false;
         }
         else if (numericCode === 23) {
             newStatus = 'EMERGENCY_SHUTDOWN';
-            computedPower = false;
+            rawPower = false;
         }
-        // Respect active power transition window so HomeKit UI doesn't snap back mid-transition
-        if (this.powerTransitionTarget !== null && Date.now() < this.powerTransitionUntil) {
-            if (computedPower === this.powerTransitionTarget) {
-                // Target state reached, clear transition lock
+        const isStandbyOff = newStatus === 'OFF' ||
+            newStatus === 'AUTO_SHUTDOWN' ||
+            newStatus === 'EMERGENCY_SHUTDOWN';
+        // 1. Cooldown & transition lifecycle updates
+        if (isStandbyOff) {
+            const wasCooling = prevStatus === 'COOLING' || this.isCooldownActive();
+            this.cooldownUntil = 0;
+            this.state.cooldownRemainingSeconds = 0;
+            this.cooldownQueryAttemptedForCycle = false;
+            this.cooldownLoggedForCycle = false;
+            if (this.deferredPowerOnPending) {
+                this.state.powerStatus = newStatus;
+                if (prevStatus !== newStatus) {
+                    this.emit('powerStatusChange', newStatus, code);
+                }
+                this.triggerDeferredPowerOn(`Projector exited cooldown (PWR!${code})`);
+                return;
+            }
+            if (this.powerTransitionTarget === false) {
                 this.powerTransitionTarget = null;
                 this.powerTransitionUntil = 0;
-            }
-            else {
-                computedPower = this.powerTransitionTarget;
+                this.clearTransitionTimer();
+                if (wasCooling) {
+                    this.log.info(`[${this.config.host}] Projector cooldown complete — unit is now in standby (PWR!${code}).`);
+                }
+                this.heartbeatLogState = 'logged-failure';
             }
         }
-        if (computedPower) {
+        else if (newStatus === 'COOLING') {
+            // If projector entered COOLING externally (not via HomeKit powerOff), start tracking cooldown.
+            if (!this.isCooldownActive() && prevStatus !== 'COOLING' && this.config.cooldownGraceSeconds > 0) {
+                this.cooldownUntil = now + this.config.cooldownGraceSeconds * 1000;
+                this.cooldownQueryAttemptedForCycle = false;
+                this.cooldownLoggedForCycle = false;
+            }
+            const remainingSec = Math.ceil(this.getRemainingCooldownMs() / 1000);
+            this.state.cooldownRemainingSeconds = remainingSec;
+            // Never clear powerTransitionTarget or cooldownUntil while still COOLING!
+            if (!this.cooldownLoggedForCycle && this.heartbeatActive && !this.deferredPowerOnPending) {
+                this.cooldownLoggedForCycle = true;
+                this.log.info(`[${this.config.host}] Projector is cooling down (PWR!${code}) — HomeKit is OFF; waiting for cooldown to finish${remainingSec > 0 ? ` (~${remainingSec}s remaining)` : ''}.`);
+            }
+            // Probe CineLife/Solaria live cooldown timer once per cycle if connected and supported
+            if (this.cooldownQuerySupported !== false && !this.cooldownQueryAttemptedForCycle && this.isConnected()) {
+                this.cooldownQueryAttemptedForCycle = true;
+                this.queryCooldown();
+            }
+        }
+        else if (newStatus === 'ON') {
+            if (this.powerTransitionTarget === true) {
+                this.powerTransitionTarget = null;
+                this.powerTransitionUntil = 0;
+                this.cooldownUntil = 0;
+                this.state.cooldownRemainingSeconds = 0;
+                this.clearTransitionTimer();
+            }
+        }
+        // 2. Respect active power transition window & deferred power-on so HomeKit never snaps back
+        let computedPower = rawPower;
+        const inTransitionWindow = this.powerTransitionTarget !== null && now < this.powerTransitionUntil;
+        if (this.deferredPowerOnPending) {
+            computedPower = true;
+        }
+        else if (inTransitionWindow) {
+            computedPower = this.powerTransitionTarget;
+        }
+        else if (this.powerTransitionTarget !== null && now >= this.powerTransitionUntil) {
+            this.powerTransitionTarget = null;
+            this.powerTransitionUntil = 0;
+        }
+        // 3. Heartbeat & state-change logging (never report errors or unexpected ON while cooling down)
+        const inOffTransitionOrCooldown = (this.powerTransitionTarget === false && now < this.powerTransitionUntil) ||
+            newStatus === 'COOLING';
+        if (this.deferredPowerOnPending || inOffTransitionOrCooldown) {
+            // Quietly track transition/cooldown without misleading heartbeat failure/unexpected-ON logs
+        }
+        else if (computedPower) {
             this.recordHeartbeatSuccess();
+        }
+        else if (isStandbyOff) {
+            if (prevPower && this.expectedPowerState === 'on') {
+                this.log.info(`[${this.config.host}] Projector powered off externally (PWR!${code}).`);
+                this.expectedPowerState = 'off';
+                this.heartbeatLogState = 'logged-failure';
+            }
         }
         else {
             this.recordHeartbeatFailure();
         }
-        const prevPower = this.state.power;
-        const prevStatus = this.state.powerStatus;
         this.state.power = computedPower;
         this.state.powerStatus = newStatus;
         if (prevStatus !== newStatus) {
@@ -942,12 +1087,46 @@ class ChristieClient extends node_events_1.EventEmitter {
             }
         }
     }
-    /**
-     * Power On: Sends `(PWR 1)` (or configured `onCommand`), plus optional Wake-on-LAN if `mac` is set.
-     */
-    async powerOn() {
+    scheduleDeferredPowerOn(delayMs) {
+        if (this.deferredPowerOnTimer) {
+            clearTimeout(this.deferredPowerOnTimer);
+            this.deferredPowerOnTimer = undefined;
+        }
+        const safeDelayMs = Math.max(0, delayMs);
+        this.deferredPowerOnTimer = setTimeout(() => {
+            this.deferredPowerOnTimer = undefined;
+            if (this.isDestroyed || !this.deferredPowerOnPending) {
+                return;
+            }
+            this.triggerDeferredPowerOn('Cooldown window elapsed');
+        }, safeDelayMs);
+    }
+    triggerDeferredPowerOn(reason) {
+        if (!this.deferredPowerOnPending) {
+            return;
+        }
+        this.deferredPowerOnPending = false;
+        if (this.deferredPowerOnTimer) {
+            clearTimeout(this.deferredPowerOnTimer);
+            this.deferredPowerOnTimer = undefined;
+        }
+        this.cooldownUntil = 0;
+        this.state.cooldownRemainingSeconds = 0;
+        this.log.info(`[${this.config.host}:${this.config.port}] ${reason} — executing deferred power ON now.`);
+        void this.executePowerOn();
+    }
+    async executePowerOn() {
+        if (this.isDestroyed) {
+            return;
+        }
         const formattedOn = ChristieClient.formatCommand(this.config.onCommand);
+        const formattedOff = ChristieClient.formatCommand(this.config.offCommand);
+        this.commandQueue = this.commandQueue.filter((cmd) => cmd !== formattedOff);
         this.log.info(`[${this.config.host}:${this.config.port}] Sending power ON command -> ${formattedOn}`);
+        this.cooldownUntil = 0;
+        this.state.cooldownRemainingSeconds = 0;
+        this.cooldownQueryAttemptedForCycle = false;
+        this.cooldownLoggedForCycle = false;
         this.powerTransitionTarget = true;
         this.powerTransitionUntil = Date.now() + this.config.cooldownGraceSeconds * 1000;
         this.pendingPowerOnCommand = formattedOn;
@@ -986,11 +1165,60 @@ class ChristieClient extends node_events_1.EventEmitter {
         this.scheduleTransitionCheck();
     }
     /**
-     * Power Off: Sends `(PWR 0)` (or configured `offCommand`).
+     * Power On: Sends `(PWR 1)` (or configured `onCommand`), plus optional Wake-on-LAN if `mac` is set.
+     * If the projector is still within its cooldown window (from a recent power OFF or active `COOLING` state),
+     * defers sending `(PWR 1)` until the remaining cooldown elapses or standby `(PWR!000)` / `(PWR+COOL!0)` is confirmed.
+     */
+    async powerOn() {
+        const formattedOn = ChristieClient.formatCommand(this.config.onCommand);
+        const remainingCooldownMs = this.getRemainingCooldownMs();
+        if (remainingCooldownMs > 0) {
+            const remainingSeconds = Math.ceil(remainingCooldownMs / 1000);
+            this.state.cooldownRemainingSeconds = remainingSeconds;
+            this.powerTransitionTarget = true;
+            this.powerTransitionUntil =
+                this.cooldownUntil + this.config.cooldownGraceSeconds * 1000;
+            const prevPower = this.state.power;
+            this.state.power = true;
+            if (!prevPower) {
+                this.emit('powerChange', true);
+            }
+            if (this.deferredPowerOnPending) {
+                this.log.info(`[${this.config.host}:${this.config.port}] Power ON already queued — waiting ~${remainingSeconds}s for projector cooldown to finish.`);
+                return;
+            }
+            this.deferredPowerOnPending = true;
+            const elapsedSinceOffSec = this.lastPowerOffAt > 0 ? Math.floor((Date.now() - this.lastPowerOffAt) / 1000) : null;
+            const elapsedNote = elapsedSinceOffSec !== null ? ` (${elapsedSinceOffSec}s since power OFF)` : '';
+            this.log.info(`[${this.config.host}:${this.config.port}] Projector is cooling down${elapsedNote} — waiting ${remainingSeconds}s before sending ${formattedOn} (or until standby (PWR!000) is confirmed).`);
+            this.scheduleDeferredPowerOn(remainingCooldownMs);
+            this.heartbeatActive = true;
+            if (!this.pollTimer) {
+                this.startPolling();
+            }
+            if (this.cooldownQuerySupported === true && this.isConnected()) {
+                this.queryCooldown();
+            }
+            this.scheduleTransitionCheck();
+            return;
+        }
+        await this.executePowerOn();
+    }
+    /**
+     * Power Off: Immediately updates HomeKit state to OFF and sends `(PWR 0)` (or configured `offCommand`).
+     * Tracks the cooldown window so cooling-down `(PWR!10)` replies never snap HomeKit back to ON,
+     * and any subsequent `powerOn()` automatically waits for the remaining cooldown.
      */
     powerOff() {
         const formattedOff = ChristieClient.formatCommand(this.config.offCommand);
-        this.log.info(`[${this.config.host}:${this.config.port}] Sending power OFF command -> ${formattedOff}`);
+        const formattedOn = ChristieClient.formatCommand(this.config.onCommand);
+        this.commandQueue = this.commandQueue.filter((cmd) => cmd !== formattedOn);
+        const wasDeferredOn = this.deferredPowerOnPending;
+        if (this.deferredPowerOnTimer) {
+            clearTimeout(this.deferredPowerOnTimer);
+            this.deferredPowerOnTimer = undefined;
+        }
+        this.deferredPowerOnPending = false;
         this.pendingPowerOnCommand = null;
         this.pendingPowerOnRetries = 0;
         this.lastPowerOnWriteAt = 0;
@@ -1000,32 +1228,47 @@ class ChristieClient extends node_events_1.EventEmitter {
         if (!this.pollTimer) {
             this.startPolling();
         }
+        const now = Date.now();
+        // If canceling a deferred ON while still in the original cooldown, preserve the remaining cooldown
+        if (!wasDeferredOn || this.cooldownUntil <= now) {
+            this.lastPowerOffAt = now;
+            this.cooldownUntil = now + this.config.cooldownGraceSeconds * 1000;
+            this.cooldownQueryAttemptedForCycle = false;
+            this.cooldownLoggedForCycle = false;
+        }
         this.powerTransitionTarget = false;
-        this.powerTransitionUntil = Date.now() + this.config.cooldownGraceSeconds * 1000;
+        this.powerTransitionUntil = this.cooldownUntil;
+        this.state.cooldownRemainingSeconds = Math.ceil(this.getRemainingCooldownMs() / 1000);
         const prevPower = this.state.power;
         this.state.power = false;
-        this.state.powerStatus = 'COOLING';
+        this.state.powerStatus = this.config.cooldownGraceSeconds > 0 ? 'COOLING' : 'OFF';
         if (prevPower) {
             this.emit('powerChange', false);
         }
+        if (wasDeferredOn) {
+            this.log.info(`[${this.config.host}:${this.config.port}] Canceled deferred power ON — projector remains in cooldown (~${this.state.cooldownRemainingSeconds}s remaining).`);
+            this.scheduleTransitionCheck();
+            return;
+        }
+        this.log.info(`[${this.config.host}:${this.config.port}] Sending power OFF command -> ${formattedOff} (cooldown window: ${this.config.cooldownGraceSeconds}s)`);
         this.sendRaw(formattedOff);
         this.scheduleTransitionCheck();
     }
     scheduleTransitionCheck() {
-        if (this.transitionTimer) {
-            clearInterval(this.transitionTimer);
-        }
+        this.clearTransitionTimer();
         let checks = 0;
+        const maxChecks = Math.max(10, Math.ceil(this.config.cooldownGraceSeconds / 3) + 2);
         this.transitionTimer = setInterval(() => {
             checks++;
-            if (this.isDestroyed || checks > 10) {
-                if (this.transitionTimer) {
-                    clearInterval(this.transitionTimer);
-                    this.transitionTimer = undefined;
-                }
+            if (this.isDestroyed ||
+                checks > maxChecks ||
+                (this.powerTransitionTarget === null && !this.deferredPowerOnPending)) {
+                this.clearTransitionTimer();
                 return;
             }
-            this.queryPower();
+            if (this.isConnected()) {
+                this.queryPower();
+            }
         }, 3000);
     }
     /**
@@ -1033,6 +1276,12 @@ class ChristieClient extends node_events_1.EventEmitter {
      */
     queryPower() {
         this.sendRaw(this.config.stateCommand);
+    }
+    /**
+     * Query Remaining Cooldown Timer `(PWR+COOL?)` (supported on CineLife / Solaria models)
+     */
+    queryCooldown() {
+        this.sendRaw('(PWR+COOL?)');
     }
     /**
      * Set Standby Mode:

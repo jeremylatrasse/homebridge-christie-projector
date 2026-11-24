@@ -64,21 +64,21 @@
               "description": "Interval in seconds to poll power `(PWR?)`, shutter `(SHU?)`, and input `(SIN?)` state."
             },
             "cooldownGraceSeconds": {
-              "title": "Power Transition / Cooldown Grace Window (Seconds)",
+              "title": "Cooldown / Warm-Up Duration (Seconds)",
               "type": "integer",
               "default": 60,
-              "minimum": 5,
-              "maximum": 300,
+              "minimum": 0,
+              "maximum": 900,
               "x-schema-form": {
                 "type": "number"
               },
-              "description": "Prevents premature state snap-back while the projector is warming up or cooling down."
+              "description": "Duration in seconds of the projector's cooldown/warm-up cycle. After Power OFF, HomeKit updates to OFF immediately while ignoring cooling-down `(PWR!10)` replies, and any Power ON request during this window waits for the remaining cooldown (or until standby `(PWR!000)` / `(PWR+COOL!0)` is confirmed)."
             },
             "treatCode10AsOn": {
-              "title": "Treat `(PWR!10)` as Power ON",
+              "title": "Treat `(PWR!10)` as Power ON Outside Cooldown",
               "type": "boolean",
               "default": true,
-              "description": "Matches `(PWR!10)` as Power ON (unless actively cooling down after Power Off), alongside standard `(PWR!001)` / `(PWR!1)`."
+              "description": "Matches `(PWR!10)` as Power ON outside of an active cooldown window, alongside standard `(PWR!001)` / `(PWR!1)`. During cooldown after Power OFF, `(PWR!10)` is always treated as Cooling Down (OFF)."
             },
             "mac": {
               "title": "MAC Address (Optional Wake-on-LAN)",

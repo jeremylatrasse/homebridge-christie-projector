@@ -18,6 +18,7 @@ export interface ChristieState {
     power: boolean;
     powerStatus: ChristiePowerStatus;
     rawPowerCode: string | null;
+    cooldownRemainingSeconds: number;
     shutterClosed: boolean;
     freeze: boolean;
     osd: boolean;
@@ -80,8 +81,15 @@ export declare class ChristieClient extends EventEmitter {
     private transitionTimer?;
     private connectTimeoutTimer?;
     private initialPollTimer?;
+    private deferredPowerOnTimer?;
+    private deferredPowerOnPending;
     private powerTransitionTarget;
     private powerTransitionUntil;
+    private lastPowerOffAt;
+    private cooldownUntil;
+    private cooldownLoggedForCycle;
+    private cooldownQueryAttemptedForCycle;
+    private cooldownQuerySupported;
     private pendingPowerOnCommand;
     private pendingPowerOnRetries;
     private lastPowerOnWriteAt;
@@ -99,6 +107,10 @@ export declare class ChristieClient extends EventEmitter {
     stop(): void;
     restart(): void;
     private clearTimers;
+    private clearTransitionTimer;
+    isCooldownActive(): boolean;
+    getRemainingCooldownMs(): number;
+    isPowerOnDeferred(): boolean;
     private beginHeartbeatProbing;
     private recordHeartbeatSuccess;
     private recordHeartbeatFailure;
@@ -136,6 +148,7 @@ export declare class ChristieClient extends EventEmitter {
     /**
      * Parses the inner content of a Christie response frame, e.g.:
      * - `PWR!001` or `PWR!001 "On"` or `PWR!10` or `PWR!000 "Standby"`
+     * - `PWR+STAT!010` or `PWR+COOL!045` (CineLife / Solaria cooldown timer)
      * - `SHU!000` or `SHU!1`
      * - `SIN!001` or `SIN+MAIN!002`
      * - `CHA!101`
@@ -151,10 +164,14 @@ export declare class ChristieClient extends EventEmitter {
      */
     private parseToken;
     /**
+     * Handles live remaining cooldown seconds reported by CineLife/Solaria `(PWR+COOL!<sec>)`.
+     */
+    private handleCooldownTimerReply;
+    /**
      * Interprets Christie `PWR!` status codes:
-     * - `0` / `00` / `000`: Standby / Power Off
+     * - `0` / `00` / `000` (and `3` on CineLife): Standby / Power Off
      * - `1` / `01` / `001`: Power On (Lamp/Laser On)
-     * - `10` / `010`: Cooling Down (or Active/On in setups matching `PWR!10` when not cooling down from powerOff)
+     * - `10` / `010`: Cooling Down (or Active/On outside cooldown when `treatCode10AsOn` is enabled)
      * - `11` / `011`: Warming Up
      * - `20`..`23` / `020`..`023`: AutoShutdown / Emergency Shutdown
      */
@@ -165,12 +182,19 @@ export declare class ChristieClient extends EventEmitter {
      * If the TCP socket is disconnected, queues the command and initiates connection immediately.
      */
     sendRaw(rawCommand: string): void;
+    private scheduleDeferredPowerOn;
+    private triggerDeferredPowerOn;
+    private executePowerOn;
     /**
      * Power On: Sends `(PWR 1)` (or configured `onCommand`), plus optional Wake-on-LAN if `mac` is set.
+     * If the projector is still within its cooldown window (from a recent power OFF or active `COOLING` state),
+     * defers sending `(PWR 1)` until the remaining cooldown elapses or standby `(PWR!000)` / `(PWR+COOL!0)` is confirmed.
      */
     powerOn(): Promise<void>;
     /**
-     * Power Off: Sends `(PWR 0)` (or configured `offCommand`).
+     * Power Off: Immediately updates HomeKit state to OFF and sends `(PWR 0)` (or configured `offCommand`).
+     * Tracks the cooldown window so cooling-down `(PWR!10)` replies never snap HomeKit back to ON,
+     * and any subsequent `powerOn()` automatically waits for the remaining cooldown.
      */
     powerOff(): void;
     private scheduleTransitionCheck;
@@ -178,6 +202,10 @@ export declare class ChristieClient extends EventEmitter {
      * Query Power State `(PWR?)`
      */
     queryPower(): void;
+    /**
+     * Query Remaining Cooldown Timer `(PWR+COOL?)` (supported on CineLife / Solaria models)
+     */
+    queryCooldown(): void;
     /**
      * Set Standby Mode:
      * - `1` = Communication Mode (keeps Ethernet / RS-232 port 3002 active during standby)
