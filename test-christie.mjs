@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import * as net from 'node:net';
 import { ChristieClient, validateChristieHost } from './dist/christieClient.js';
 import { sanitizeHomeKitName, isExplicitlyNamed } from './dist/platformAccessory.js';
-import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './dist/settings.js';
-import { ChristieProjectorPlatform } from './dist/platform.js';
+import { CHRISTIE_DEFAULT_PORT, PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './dist/settings.js';
+import { ChristieProjectorPlatform, normalizePlatformConfig } from './dist/platform.js';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const schema = JSON.parse(readFileSync(new URL('./config.schema.json', import.meta.url), 'utf8'));
@@ -462,5 +463,134 @@ assert.strictEqual(typeof wolClient.sendWakeOnLan, 'function');
 await wolClient.sendWakeOnLan('00:1E:06:12:34:56');
 wolClient.stop();
 console.log('✓ IPv4 4-octet validation & WoL tests passed');
+
+// 9. Config UI X Slider Audit & schema metadata verification
+assert.strictEqual(schema.pluginAlias, PLATFORM_NAME, 'pluginAlias must match PLATFORM_NAME');
+assert.strictEqual(schema.pluginType, 'platform', 'pluginType must be platform');
+const sliderHits = [];
+function auditSliders(node, path) {
+  if (!node || typeof node !== 'object') {
+    return;
+  }
+  const types = Array.isArray(node.type) ? node.type : [node.type];
+  const isBounded = Object.hasOwn(node, 'minimum') && Object.hasOwn(node, 'maximum');
+  const isSliderType = types.includes('integer') || types.includes('number');
+  const hasOverride = Boolean(
+    node['x-schema-form']?.type ||
+    node['x-schema-form']?.widget?.component ||
+    typeof node['x-schema-form']?.widget === 'string' ||
+    node.widget?.component ||
+    typeof node.widget === 'string',
+  );
+  if (isBounded && isSliderType && !hasOverride && path !== 'schema.properties._bridge.properties.port') {
+    sliderHits.push({ path, type: node.type, minimum: node.minimum, maximum: node.maximum });
+  }
+  if (node.properties && typeof node.properties === 'object') {
+    for (const [k, v] of Object.entries(node.properties)) {
+      auditSliders(v, `${path}.properties.${k}`);
+    }
+  }
+  if (node.items) {
+    if (Array.isArray(node.items)) {
+      node.items.forEach((v, i) => auditSliders(v, `${path}.items[${i}]`));
+    } else {
+      auditSliders(node.items, `${path}.items`);
+    }
+  }
+  for (const key of ['oneOf', 'anyOf', 'allOf']) {
+    if (Array.isArray(node[key])) {
+      node[key].forEach((v, i) => auditSliders(v, `${path}.${key}[${i}]`));
+    }
+  }
+}
+auditSliders(schema.schema, 'schema');
+assert.deepStrictEqual(
+  sliderHits,
+  [],
+  `config.schema.json contains bounded numeric fields without x-schema-form.type = "number": ${JSON.stringify(sliderHits)}`,
+);
+console.log('✓ Config UI X slider audit passed (0 unintended sliders)');
+
+// 10. normalizePlatformConfig, scoped platform names & invalid top-level host safety
+const normalizedSingle = normalizePlatformConfig({
+  platform: `${PLUGIN_NAME}.${PLATFORM_NAME}`,
+  name: 'Theater Christie',
+  host: ' 172.16.1.247 ',
+});
+assert.strictEqual(normalizedSingle.devices.length, 1);
+assert.strictEqual(normalizedSingle.devices[0].name, 'Theater Christie');
+assert.strictEqual(normalizedSingle.devices[0].host, '172.16.1.247');
+assert.strictEqual(normalizedSingle.devices[0].port, CHRISTIE_DEFAULT_PORT);
+
+const invalidHostErrors = [];
+const invalidTopLevelPlatform = new ChristieProjectorPlatform(
+  {
+    info: () => {},
+    warn: () => {},
+    error: (msg) => invalidHostErrors.push(msg),
+    debug: () => {},
+  },
+  {
+    platform: `${PLUGIN_NAME}.${PLATFORM_NAME}`,
+    name: 'Broken Christie',
+    host: '172.16.247', // invalid 3-octet IPv4
+  },
+  mockApi,
+);
+invalidTopLevelPlatform.discoverDevices();
+assert.ok(
+  invalidHostErrors.some((e) => e.includes('Invalid IPv4 address')),
+  'Invalid top-level host must log error and skip gracefully without throwing',
+);
+console.log('✓ normalizePlatformConfig & invalid top-level host safety passed');
+
+// 11. End-to-end mock Christie TCP server test
+const mockRxCommands = [];
+let mockConnectionCount = 0;
+const mockChristieServer = net.createServer((socket) => {
+  mockConnectionCount += 1;
+  socket.on('data', (chunk) => {
+    const text = chunk.toString('utf8');
+    const frames = text.match(/\([^)]+\)/g) || [];
+    for (const frame of frames) {
+      mockRxCommands.push(frame);
+      if (frame === '(PWR 1)' || frame === '(PWR?)') {
+        socket.write('(PWR!001 "On")\r\n');
+      } else if (frame === '(SHU?)') {
+        socket.write('(SHU!000)\r\n');
+      } else if (frame === '(SIN?)') {
+        socket.write('(SIN!002)\r\n');
+      } else if (frame === '(FRZ?)') {
+        socket.write('(FRZ!000)\r\n');
+      }
+    }
+  });
+});
+
+await new Promise((resolve) => mockChristieServer.listen(0, '127.0.0.1', resolve));
+const mockPort = mockChristieServer.address().port;
+try {
+  const tcpClient = new ChristieClient(
+    {
+      host: '127.0.0.1',
+      port: mockPort,
+      pollInterval: 60,
+      cooldownGraceSeconds: 5,
+    },
+    mockLog,
+  );
+  tcpClient.start();
+  await tcpClient.powerOn();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.strictEqual(mockConnectionCount, 1, 'Should maintain a single TCP connection during normal polling');
+  assert.ok(mockRxCommands.includes('(PWR 1)'), 'Should transmit (PWR 1) on powerOn');
+  assert.strictEqual(tcpClient.state.power, true);
+  assert.strictEqual(tcpClient.state.currentInput, 2);
+  tcpClient.stop();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+} finally {
+  mockChristieServer.close();
+}
+console.log('✓ End-to-end mock Christie TCP server test passed');
 
 console.log('\n🎉 All Christie Projector plugin tests passed!');

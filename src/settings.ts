@@ -14,10 +14,15 @@ export const PLATFORM_NAME = 'ChristieProjector';
 export const PLUGIN_NAME = 'homebridge-christie-projector';
 
 /**
+ * Default Christie Digital ASCII Serial-over-Ethernet TCP port.
+ */
+export const CHRISTIE_DEFAULT_PORT = 3002;
+
+/**
  * Reads the current plugin version from package.json dynamically so
  * Homebridge logs and HomeKit FirmwareRevision always match package.json.
  */
-function loadPluginVersion(): string {
+export function loadPluginVersion(): string {
   try {
     const pkgPath = join(__dirname, '..', 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };

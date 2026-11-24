@@ -1,11 +1,13 @@
-#!/bin/zsh
-# Automatically increments the patch version in package.json & package-lock.json
-# when new changes are committed to be pushed to GitHub.
+#!/usr/bin/env bash
+# Automatically increments the patch version in package.json, package-lock.json,
+# and Xcode project.pbxproj before creating a commit.
 
-set -e
+if [ "${SKIP_VERSION_BUMP:-0}" = "1" ] || [ "${CHRISTIE_SKIP_VERSION_BUMP:-0}" = "1" ]; then
+  exit 0
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 1
 
 # Ensure no Xcode-specific files are ever staged or committed to GitHub
 XCODE_STAGED=($(git diff --cached --name-only | grep -E '(\.xcodeproj/|\.xcworkspace/|\.pbxproj$|/Xcode/|\.xcplugincache$|CachedSpecifications-|xcuserdata/|DerivedData/)' || true))
@@ -14,69 +16,85 @@ if [ ${#XCODE_STAGED[@]} -gt 0 ]; then
   git rm --cached -f --quiet -- "${XCODE_STAGED[@]}" 2>/dev/null || git reset -q HEAD -- "${XCODE_STAGED[@]}" || true
 fi
 
-if [ "${CHRISTIE_SKIP_VERSION_BUMP:-0}" = "1" ]; then
-  exit 0
-fi
-
-setopt +o nomatch 2>/dev/null || true
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.volta/bin:$HOME/.fnm/current/bin:$HOME/.local/share/fnm/aliases/default/bin:$HOME/.asdf/shims:/opt/local/bin:$PATH"
-for d in $HOME/.nvm/versions/node/*/bin(N) /opt/homebrew/opt/node*/bin(N) /usr/local/opt/node*/bin(N); do
-  [ -d "$d" ] && export PATH="$d:$PATH"
-done
 
-# If package.json version is already modified in the staged commit, do not bump again
-if git diff --cached -U0 -- package.json | grep -q '^[+-][[:space:]]*"version"'; then
-  exit 0
+NEW_VERSION="$(/usr/bin/python3 - <<'PY'
+import json, os, re, subprocess, sys
+
+def parse_ver(v):
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", str(v or "").strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+
+def fmt_ver(t):
+    return f"{t[0]}.{t[1]}.{t[2]}"
+
+def git_pkg_ver(ref):
+    try:
+        out = subprocess.check_output(["git", "show", f"{ref}:package.json"], stderr=subprocess.DEVNULL, text=True)
+        return parse_ver(json.loads(out).get("version"))
+    except Exception:
+        return None
+
+if not os.path.exists("package.json"):
+    sys.exit(0)
+
+with open("package.json", "r", encoding="utf-8") as f:
+    pkg = json.load(f)
+
+disk_ver = parse_ver(pkg.get("version"))
+head_ver = git_pkg_ver("HEAD") or (0, 0, 0)
+
+# Keep an explicit version change on disk (bump or intentional reset);
+# otherwise increment the patch version from HEAD.
+if disk_ver != head_ver:
+    target_ver = disk_ver
+else:
+    target_ver = (head_ver[0], head_ver[1], head_ver[2] + 1)
+
+next_version = fmt_ver(target_ver)
+
+if pkg.get("version") != next_version:
+    pkg["version"] = next_version
+    with open("package.json", "w", encoding="utf-8") as f:
+        json.dump(pkg, f, indent=2)
+        f.write("\n")
+
+if os.path.exists("package-lock.json"):
+    with open("package-lock.json", "r", encoding="utf-8") as f:
+        lock = json.load(f)
+    lock["version"] = next_version
+    if isinstance(lock.get("packages"), dict) and "" in lock["packages"]:
+        lock["packages"][""]["version"] = next_version
+    with open("package-lock.json", "w", encoding="utf-8") as f:
+        json.dump(lock, f, indent=2)
+        f.write("\n")
+
+pbx_path = "homebridge-christie-projector.xcodeproj/project.pbxproj"
+if os.path.exists(pbx_path):
+    with open(pbx_path, "r", encoding="utf-8") as f:
+        pbx = f.read()
+    new_pbx = re.sub(r"MARKETING_VERSION = [^;]+;", f"MARKETING_VERSION = {next_version};", pbx)
+    if new_pbx != pbx:
+        new_pbx = re.sub(
+            r"CURRENT_PROJECT_VERSION = (\d+);",
+            lambda m: f"CURRENT_PROJECT_VERSION = {int(m.group(1)) + 1};",
+            new_pbx,
+        )
+        with open(pbx_path, "w", encoding="utf-8") as f:
+            f.write(new_pbx)
+
+sys.stdout.write(next_version)
+PY
+)"
+
+# Rebuild dist/ if tsc is present so dist/ stays in sync with src/
+if [ -x "./node_modules/.bin/tsc" ]; then
+  ./node_modules/.bin/tsc -p tsconfig.json --pretty false
+  git add dist/ 2>/dev/null || true
 fi
 
-if command -v node >/dev/null 2>&1; then
-  # Check if local version is already ahead of origin/main
-  REMOTE_VER=""
-  if git rev-parse --verify origin/main >/dev/null 2>&1; then
-    REMOTE_VER=$(git show origin/main:package.json 2>/dev/null | node -e '
-      let d = "";
-      process.stdin.on("data", c => d += c);
-      process.stdin.on("end", () => {
-        try { process.stdout.write(JSON.parse(d).version || ""); } catch {}
-      });
-    ' || true)
-  fi
-
-  CURRENT_VER=$(node -p "require('./package.json').version" 2>/dev/null || echo "")
-
-  if [ -n "$REMOTE_VER" ] && [ -n "$CURRENT_VER" ] && [ "$CURRENT_VER" != "$REMOTE_VER" ]; then
-    # Version has already been incremented since the last push to origin/main
-    exit 0
-  fi
-
-  NEW_VER=$(node -e '
-    const fs = require("fs");
-    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-    const parts = (pkg.version || "1.0.0").split(".").map(Number);
-    parts[2] = (parts[2] || 0) + 1;
-    const nextVer = parts.join(".");
-    pkg.version = nextVer;
-    fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-    if (fs.existsSync("package-lock.json")) {
-      const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
-      lock.version = nextVer;
-      if (lock.packages && lock.packages[""]) {
-        lock.packages[""].version = nextVer;
-      }
-      fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
-    }
-    process.stdout.write(nextVer);
-  ')
-  echo "Auto-bumped plugin version to v${NEW_VER}"
-
-  # Rebuild dist/ if tsc is present so dist/ stays in sync with src/
-  if [ -f "./node_modules/.bin/tsc" ]; then
-    node ./node_modules/.bin/tsc -p tsconfig.json --pretty false
-    git add dist/
-  fi
-
-  git add package.json
-  if [ -f "package-lock.json" ]; then
-    git add package-lock.json
-  fi
+if [ -n "$NEW_VERSION" ]; then
+  git add package.json package-lock.json 2>/dev/null || true
 fi
+
+exit 0

@@ -4,6 +4,7 @@ src/
 .vscode/
 tsconfig.json
 Makefile
+MAINTAINING.md
 test-christie.mjs
 *.xcodeproj/
 *.pbxproj

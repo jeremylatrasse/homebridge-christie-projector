@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PLUGIN_VERSION = exports.PLUGIN_NAME = exports.PLATFORM_NAME = void 0;
+exports.PLUGIN_VERSION = exports.CHRISTIE_DEFAULT_PORT = exports.PLUGIN_NAME = exports.PLATFORM_NAME = void 0;
+exports.loadPluginVersion = loadPluginVersion;
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
 /**
@@ -13,6 +14,10 @@ exports.PLATFORM_NAME = 'ChristieProjector';
  * This must match the name in package.json.
  */
 exports.PLUGIN_NAME = 'homebridge-christie-projector';
+/**
+ * Default Christie Digital ASCII Serial-over-Ethernet TCP port.
+ */
+exports.CHRISTIE_DEFAULT_PORT = 3002;
 /**
  * Reads the current plugin version from package.json dynamically so
  * Homebridge logs and HomeKit FirmwareRevision always match package.json.

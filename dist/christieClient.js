@@ -35,9 +35,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChristieClient = void 0;
 exports.validateChristieHost = validateChristieHost;
-const events_1 = require("events");
-const net = __importStar(require("net"));
-const dgram = __importStar(require("dgram"));
+const dgram = __importStar(require("node:dgram"));
+const node_events_1 = require("node:events");
+const net = __importStar(require("node:net"));
 /**
  * Christie Digital Serial / TCP Protocol Client (Default Port 3002).
  *
@@ -102,7 +102,7 @@ function validateChristieHost(host) {
     }
     return { valid: true };
 }
-class ChristieClient extends events_1.EventEmitter {
+class ChristieClient extends node_events_1.EventEmitter {
     log;
     socket = null;
     isConnecting = false;
@@ -391,15 +391,33 @@ class ChristieClient extends events_1.EventEmitter {
             this.connectTimeoutTimer = undefined;
         }
         if (this.socket) {
+            const sock = this.socket;
+            this.socket = null;
             try {
-                this.socket.removeAllListeners();
-                this.socket.end();
-                this.socket.destroy();
+                sock.removeAllListeners();
+                if (!sock.destroyed && !this.isConnecting && sock.writable) {
+                    sock.end();
+                    const forceDestroy = setTimeout(() => {
+                        if (!sock.destroyed) {
+                            sock.destroy();
+                        }
+                    }, 150);
+                    forceDestroy.unref();
+                }
+                else {
+                    sock.end();
+                    sock.destroy();
+                }
             }
             catch {
                 // ignore errors on tear-down
+                try {
+                    sock.destroy();
+                }
+                catch {
+                    // ignore
+                }
             }
-            this.socket = null;
         }
         this.isConnecting = false;
         this.awaitingResponse = false;

@@ -1,4 +1,4 @@
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 export type ChristiePowerStatus = 'OFF' | 'ON' | 'COOLING' | 'WARMING' | 'AUTO_SHUTDOWN' | 'EMERGENCY_SHUTDOWN';
 export interface ChristieClientConfig {
     host: string;

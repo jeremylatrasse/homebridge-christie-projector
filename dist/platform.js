@@ -1,9 +1,66 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChristieProjectorPlatform = void 0;
+exports.normalizePlatformConfig = normalizePlatformConfig;
 const settings_1 = require("./settings");
 const christieClient_1 = require("./christieClient");
 const platformAccessory_1 = require("./platformAccessory");
+function normalizePort(rawPort) {
+    if (typeof rawPort === 'number' && Number.isFinite(rawPort) && rawPort >= 1 && rawPort <= 65535) {
+        return Math.floor(rawPort);
+    }
+    return settings_1.CHRISTIE_DEFAULT_PORT;
+}
+function normalizePlatformConfig(config) {
+    const platformName = typeof config.name === 'string' && config.name.trim().length > 0
+        ? config.name.trim()
+        : 'Christie Projector';
+    const rawDevices = Array.isArray(config.devices)
+        ? config.devices
+        : [];
+    const devices = rawDevices
+        .filter((d) => Boolean(d && typeof d === 'object'))
+        .map((d) => ({
+        ...d,
+        name: typeof d.name === 'string' && d.name.trim() ? d.name.trim() : 'Christie Projector',
+        host: typeof d.host === 'string' ? d.host.trim() : '',
+        port: normalizePort(d.port),
+    }));
+    // Support legacy/single-device top-level host configuration when devices[] is empty
+    if (devices.length === 0 && typeof config.host === 'string' && config.host.trim().length > 0) {
+        devices.push({
+            name: platformName,
+            host: config.host.trim(),
+            port: normalizePort(config.port),
+            mac: config.mac,
+            pollInterval: (config.pollInterval ?? config.interval),
+            cooldownGraceSeconds: config.cooldownGraceSeconds,
+            treatCode10AsOn: config.treatCode10AsOn,
+            inputCommandType: config.inputCommandType,
+            onCommand: config.onCommand,
+            offCommand: config.offCommand,
+            stateCommand: config.stateCommand,
+            enablePowerSwitch: config.enablePowerSwitch,
+            enableShutterSwitch: config.enableShutterSwitch,
+            enableFreezeSwitch: config.enableFreezeSwitch,
+            enableOsdSwitch: config.enableOsdSwitch,
+            enablePipSwitch: config.enablePipSwitch,
+            enableAutoSetupSwitch: config.enableAutoSetupSwitch,
+            enableLensCalibrateSwitch: config.enableLensCalibrateSwitch,
+            enableLightPowerSlider: config.enableLightPowerSlider,
+            lightSliderType: config.lightSliderType,
+            inputs: config.inputs,
+            channels: config.channels,
+            lensPresets: config.lensPresets,
+            testPatterns: config.testPatterns,
+            customCommands: config.customCommands,
+        });
+    }
+    return {
+        name: platformName,
+        devices,
+    };
+}
 class ChristieProjectorPlatform {
     log;
     config;
@@ -12,13 +69,19 @@ class ChristieProjectorPlatform {
     Characteristic;
     accessories = [];
     clients = new Map();
+    normalizedConfig;
+    registeredPlatformName;
     constructor(log, config, api) {
         this.log = log;
         this.config = config;
         this.api = api;
         this.Service = this.api.hap.Service;
         this.Characteristic = this.api.hap.Characteristic;
-        this.log.info(`Initializing ${settings_1.PLATFORM_NAME} v${settings_1.PLUGIN_VERSION} platform (${this.config.name || 'Christie Projector'})...`);
+        this.normalizedConfig = normalizePlatformConfig(this.config);
+        this.registeredPlatformName = this.config.platform
+            ? String(this.config.platform).split('.').pop() || settings_1.PLATFORM_NAME
+            : settings_1.PLATFORM_NAME;
+        this.log.info(`Initializing ${settings_1.PLATFORM_NAME} v${settings_1.PLUGIN_VERSION} platform (${this.normalizedConfig.name})...`);
         this.api.on('didFinishLaunching', () => {
             this.log.debug('Executed didFinishLaunching callback');
             this.discoverDevices();
@@ -41,25 +104,16 @@ class ChristieProjectorPlatform {
      * Discovers and initializes configured Christie Digital projectors.
      */
     discoverDevices() {
-        const rawDevices = Array.isArray(this.config.devices)
-            ? this.config.devices
-            : [];
         const validDevices = [];
-        for (const raw of rawDevices) {
-            if (!raw || typeof raw !== 'object') {
-                continue;
-            }
-            const host = typeof raw.host === 'string' ? raw.host.trim() : '';
+        for (const raw of this.normalizedConfig.devices) {
+            const host = raw.host;
             if (host) {
                 const validation = (0, christieClient_1.validateChristieHost)(host);
                 if (!validation.valid) {
                     this.log.error(`Skipping Christie device "${raw.name || host}" — ${validation.reason}`);
                     continue;
                 }
-                validDevices.push({
-                    ...raw,
-                    host,
-                });
+                validDevices.push(raw);
             }
             else {
                 const rawName = typeof raw.name === 'string' ? raw.name.trim() : '';
@@ -78,51 +132,25 @@ class ChristieProjectorPlatform {
                 }
             }
         }
-        const devices = [];
-        if (validDevices.length > 0) {
-            devices.push(...validDevices);
-        }
-        else if (typeof this.config.host === 'string' && this.config.host.trim().length > 0) {
-            devices.push({
-                name: this.config.name || 'Christie Projector',
-                host: this.config.host.trim(),
-                port: this.config.port,
-                mac: this.config.mac,
-                pollInterval: this.config.pollInterval ?? this.config.interval,
-                cooldownGraceSeconds: this.config.cooldownGraceSeconds,
-                treatCode10AsOn: this.config.treatCode10AsOn,
-                inputCommandType: this.config.inputCommandType,
-                onCommand: this.config.onCommand,
-                offCommand: this.config.offCommand,
-                stateCommand: this.config.stateCommand,
-                enablePowerSwitch: this.config.enablePowerSwitch,
-                enableShutterSwitch: this.config.enableShutterSwitch,
-                enableFreezeSwitch: this.config.enableFreezeSwitch,
-                enableOsdSwitch: this.config.enableOsdSwitch,
-                enablePipSwitch: this.config.enablePipSwitch,
-                enableAutoSetupSwitch: this.config.enableAutoSetupSwitch,
-                enableLensCalibrateSwitch: this.config.enableLensCalibrateSwitch,
-                enableLightPowerSlider: this.config.enableLightPowerSlider,
-                lightSliderType: this.config.lightSliderType,
-                inputs: this.config.inputs,
-                channels: this.config.channels,
-                lensPresets: this.config.lensPresets,
-                testPatterns: this.config.testPatterns,
-                customCommands: this.config.customCommands,
-            });
-        }
-        if (devices.length === 0) {
-            this.log.warn('No Christie projectors configured in config.json.');
-        }
         // Remove any legacy cached bridged accessories from previous configurations
         if (this.accessories.length > 0) {
             this.log.info(`Removing ${this.accessories.length} legacy cached bridged accessory(ies)...`);
-            this.api.unregisterPlatformAccessories(settings_1.PLUGIN_NAME, settings_1.PLATFORM_NAME, this.accessories);
+            try {
+                this.api.unregisterPlatformAccessories(settings_1.PLUGIN_NAME, this.registeredPlatformName, this.accessories);
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                this.log.debug(`Failed to unregister legacy cached accessories: ${msg}`);
+            }
             this.accessories.length = 0;
         }
-        for (const device of devices) {
+        if (validDevices.length === 0) {
+            this.log.warn('No Christie projectors configured in config.json.');
+            return;
+        }
+        for (const device of validDevices) {
             const deviceName = (0, platformAccessory_1.sanitizeHomeKitName)(device.name || 'Christie Projector', 'Christie Projector');
-            const port = device.port || 3002;
+            const port = device.port || settings_1.CHRISTIE_DEFAULT_PORT;
             const client = new christieClient_1.ChristieClient({
                 host: device.host,
                 port,
@@ -135,18 +163,26 @@ class ChristieProjectorPlatform {
                 offCommand: device.offCommand,
                 stateCommand: device.stateCommand,
             }, this.log);
-            this.clients.set(device.host, client);
+            this.clients.set(`${device.host}:${port}`, client);
             client.start();
             // Publish 1 unified external Television/Projector accessory containing the Projector,
             // named Input Sources, and optional Shutter/Freeze/OSD/PIP/Lens/Pattern switches.
+            // Keep UUID seed unchanged so Apple Home room assignments and scenes remain stable.
             const uuid = this.api.hap.uuid.generate(`christie-projector-${device.host}:${port}`);
             const accessory = new this.api.platformAccessory(deviceName, uuid, 31 /* this.api.hap.Categories.TELEVISION */);
             new platformAccessory_1.ChristieProjectorAccessory(this, accessory, client, {
                 ...device,
                 name: deviceName,
+                port,
             });
-            this.log.info(`Publishing Christie Projector accessory: ${deviceName} (${device.host}:${port})`);
-            this.api.publishExternalAccessories(settings_1.PLUGIN_NAME, [accessory]);
+            try {
+                this.log.info(`Publishing Christie Projector accessory: ${deviceName} (${device.host}:${port})`);
+                this.api.publishExternalAccessories(settings_1.PLUGIN_NAME, [accessory]);
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                this.log.error(`[${deviceName}] Failed to publish Christie Projector accessory: ${msg}`);
+            }
         }
     }
 }

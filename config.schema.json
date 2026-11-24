@@ -43,6 +43,9 @@
               "default": 3002,
               "minimum": 1,
               "maximum": 65535,
+              "x-schema-form": {
+                "type": "number"
+              },
               "description": "Christie Serial-over-Ethernet TCP port (default is 3002)."
             },
             "pollInterval": {
@@ -51,6 +54,9 @@
               "default": 10,
               "minimum": 2,
               "maximum": 300,
+              "x-schema-form": {
+                "type": "number"
+              },
               "description": "Interval in seconds to poll power `(PWR?)`, shutter `(SHU?)`, and input `(SIN?)` state."
             },
             "cooldownGraceSeconds": {
@@ -59,6 +65,9 @@
               "default": 60,
               "minimum": 5,
               "maximum": 300,
+              "x-schema-form": {
+                "type": "number"
+              },
               "description": "Prevents premature state snap-back while the projector is warming up or cooling down."
             },
             "treatCode10AsOn": {
@@ -79,19 +88,19 @@
               "default": "SIN",
               "oneOf": [
                 {
-                  "title": "Standard Input \u2014 (SIN <id>)",
+                  "title": "Standard Input — (SIN <id>)",
                   "enum": [
                     "SIN"
                   ]
                 },
                 {
-                  "title": "Main Window Input \u2014 (SIN+MAIN <id>)",
+                  "title": "Main Window Input — (SIN+MAIN <id>)",
                   "enum": [
                     "SIN+MAIN"
                   ]
                 },
                 {
-                  "title": "Channel Preset \u2014 (CHA <id>)",
+                  "title": "Channel Preset — (CHA <id>)",
                   "enum": [
                     "CHA"
                   ]
@@ -145,7 +154,7 @@
               "title": "Expose Laser / Lamp Output Power Slider `(LPW)`",
               "type": "boolean",
               "default": false,
-              "description": "Exposes a 0\u2013100% slider to adjust laser/lamp power `(LPW <level>)`."
+              "description": "Exposes a 0–100% slider to adjust laser/lamp power `(LPW <level>)`."
             },
             "lightSliderType": {
               "title": "Laser / Lamp Power Slider Service Type",
@@ -183,7 +192,10 @@
                     "title": "Input or Channel Number",
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 999
+                    "maximum": 999,
+                    "x-schema-form": {
+                      "type": "number"
+                    }
                   },
                   "name": {
                     "title": "Input Name",
@@ -227,7 +239,10 @@
                     "title": "Channel Number",
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 999
+                    "maximum": 999,
+                    "x-schema-form": {
+                      "type": "number"
+                    }
                   },
                   "name": {
                     "title": "Channel Switch Name",
@@ -248,7 +263,10 @@
                     "title": "Preset Slot / Mode Number",
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 99
+                    "maximum": 99,
+                    "x-schema-form": {
+                      "type": "number"
+                    }
                   },
                   "name": {
                     "title": "Preset Switch Name",
@@ -261,19 +279,19 @@
                     "default": "ILF",
                     "oneOf": [
                       {
-                        "title": "Intelligent Lens File \u2014 (ILF <id>)",
+                        "title": "Intelligent Lens File — (ILF <id>)",
                         "enum": [
                           "ILF"
                         ]
                       },
                       {
-                        "title": "Lens Memory Load \u2014 (LML <id>)",
+                        "title": "Lens Memory Load — (LML <id>)",
                         "enum": [
                           "LML"
                         ]
                       },
                       {
-                        "title": "Size / Aspect Ratio Mode \u2014 (SZE <id>)",
+                        "title": "Size / Aspect Ratio Mode — (SZE <id>)",
                         "enum": [
                           "SZE"
                         ]
@@ -294,7 +312,10 @@
                     "title": "Pattern ID",
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 99
+                    "maximum": 99,
+                    "x-schema-form": {
+                      "type": "number"
+                    }
                   },
                   "name": {
                     "title": "Pattern Switch Name",

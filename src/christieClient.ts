@@ -1,6 +1,6 @@
-import { EventEmitter } from 'events';
-import * as net from 'net';
-import * as dgram from 'dgram';
+import * as dgram from 'node:dgram';
+import { EventEmitter } from 'node:events';
+import * as net from 'node:net';
 
 export type ChristiePowerStatus =
   | 'OFF'
@@ -463,14 +463,30 @@ export class ChristieClient extends EventEmitter {
       this.connectTimeoutTimer = undefined;
     }
     if (this.socket) {
+      const sock = this.socket;
+      this.socket = null;
       try {
-        this.socket.removeAllListeners();
-        this.socket.end();
-        this.socket.destroy();
+        sock.removeAllListeners();
+        if (!sock.destroyed && !this.isConnecting && sock.writable) {
+          sock.end();
+          const forceDestroy = setTimeout(() => {
+            if (!sock.destroyed) {
+              sock.destroy();
+            }
+          }, 150);
+          forceDestroy.unref();
+        } else {
+          sock.end();
+          sock.destroy();
+        }
       } catch {
         // ignore errors on tear-down
+        try {
+          sock.destroy();
+        } catch {
+          // ignore
+        }
       }
-      this.socket = null;
     }
     this.isConnecting = false;
     this.awaitingResponse = false;

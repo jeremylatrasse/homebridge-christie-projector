@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Verifies that the version has been incremented before pushing to GitHub.
+# Primary version bumping happens in pre-commit and post-commit using /usr/bin/python3
+# so that the version bump is already part of HEAD before git push starts.
+
+if [ "${SKIP_VERSION_BUMP:-0}" = "1" ] || [ "${CHRISTIE_SKIP_VERSION_BUMP:-0}" = "1" ]; then
+  exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 1
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+
+  ALREADY_BUMPED="$(/usr/bin/python3 - "$local_sha" "$remote_sha" <<'PY'
+import json, re, subprocess, sys
+
+def parse_ver(v):
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", str(v or "").strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+
+def git_pkg_ver(ref):
+    if not ref or re.match(r"^0+$", ref):
+        return None
+    try:
+        out = subprocess.check_output(["git", "show", f"{ref}:package.json"], stderr=subprocess.DEVNULL, text=True)
+        return parse_ver(json.loads(out).get("version"))
+    except Exception:
+        return None
+
+local_v = git_pkg_ver(sys.argv[1])
+remote_v = git_pkg_ver(sys.argv[2])
+
+if remote_v is None or (local_v and local_v > remote_v):
+    sys.stdout.write("YES")
+else:
+    sys.stdout.write("NO")
+PY
+)"
+
+  if [ "$ALREADY_BUMPED" = "YES" ]; then
+    exit 0
+  fi
+done
+
+exit 0

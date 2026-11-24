@@ -23,10 +23,14 @@ all: hooks build
 
 ## Install local Git hooks so version automatically increments when changes are committed/pushed
 hooks:
-	@if [ -d ".git" ] && [ -f ".githooks/pre-commit" ]; then \
-		chmod +x .githooks/pre-commit; \
-		cp .githooks/pre-commit .git/hooks/pre-commit; \
-		chmod +x .git/hooks/pre-commit; \
+	@if [ -d ".git" ] && [ -d ".githooks" ]; then \
+		for h in pre-commit post-commit pre-push; do \
+			if [ -f ".githooks/$$h" ]; then \
+				chmod +x ".githooks/$$h"; \
+				cp ".githooks/$$h" ".git/hooks/$$h"; \
+				chmod +x ".git/hooks/$$h"; \
+			fi; \
+		done; \
 		git config core.hooksPath .githooks 2>/dev/null || true; \
 	fi
 
