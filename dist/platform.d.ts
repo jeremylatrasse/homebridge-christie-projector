@@ -9,10 +9,16 @@ export declare class ChristieProjectorPlatform implements DynamicPlatformPlugin 
     readonly log: Logger;
     readonly config: PlatformConfig;
     readonly api: API;
+    /**
+     * Resets the process-wide registry of published external accessory UUIDs.
+     * Intended for unit tests.
+     */
+    static resetPublishedExternalUuids(): void;
     readonly Service: typeof Service;
     readonly Characteristic: typeof Characteristic;
     readonly accessories: PlatformAccessory[];
     private readonly clients;
+    private readonly ownedExternalUuids;
     private readonly normalizedConfig;
     private readonly registeredPlatformName;
     constructor(log: Logger, config: PlatformConfig, api: API);

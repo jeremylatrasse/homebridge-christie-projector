@@ -593,4 +593,71 @@ try {
 }
 console.log('✓ End-to-end mock Christie TCP server test passed');
 
+// 12. Duplicate device & duplicate platform address collision guard
+ChristieProjectorPlatform.resetPublishedExternalUuids();
+const collisionPublished = [];
+const collisionWarnings = [];
+const collisionApi = {
+  ...mockApi,
+  publishExternalAccessories: (_pluginName, accs) => collisionPublished.push(...accs),
+};
+const collisionLog = {
+  info: () => {},
+  warn: (msg) => collisionWarnings.push(msg),
+  error: () => {},
+  debug: () => {},
+};
+
+// Case A: duplicate devices[] entries with same host:port
+const dupDevicesPlatform = new ChristieProjectorPlatform(
+  collisionLog,
+  {
+    platform: 'ChristieProjector',
+    devices: [
+      { name: 'Christie Projector', host: '172.16.1.247', port: 3002 },
+      { name: 'Christie Projector Copy', host: '172.16.1.247', port: '3002' },
+    ],
+  },
+  collisionApi,
+);
+dupDevicesPlatform.discoverDevices();
+assert.strictEqual(collisionPublished.length, 1, 'Duplicate host:port entries must only publish once');
+assert.ok(
+  collisionWarnings.some((w) => w.includes('Skipping duplicate Christie device')),
+  'Duplicate device entry must log a clear warning',
+);
+
+// Case B: second platform block in same process targeting same host:port
+const dupPlatform2 = new ChristieProjectorPlatform(
+  collisionLog,
+  {
+    platform: `${PLUGIN_NAME}.${PLATFORM_NAME}`,
+    devices: [{ name: 'Christie Projector', host: '172.16.1.247', port: 3002 }],
+  },
+  collisionApi,
+);
+dupPlatform2.discoverDevices();
+assert.strictEqual(collisionPublished.length, 1, 'Duplicate platform instance must not republish same external UUID');
+assert.ok(
+  collisionWarnings.some((w) => w.includes('already published in this Homebridge process')),
+  'Duplicate platform block must log address collision prevention warning',
+);
+
+// Case C: placeholder in devices[] + top-level host fallback + string port
+const fallbackNormalized = normalizePlatformConfig({
+  platform: 'ChristieProjector',
+  name: 'Top Level Christie',
+  host: '172.16.1.248',
+  port: '3003',
+  devices: [{ name: 'Christie Projector' }],
+});
+const configuredFallback = fallbackNormalized.devices.filter((d) => d.host);
+assert.strictEqual(configuredFallback.length, 1, 'Top-level host should still be used when devices[] only has empty placeholders');
+assert.strictEqual(configuredFallback[0].port, 3003, 'Numeric string port should normalize to integer');
+
+for (const c of dupDevicesPlatform['clients'].values()) c.stop();
+for (const c of dupPlatform2['clients'].values()) c.stop();
+ChristieProjectorPlatform.resetPublishedExternalUuids();
+console.log('✓ Duplicate device & platform address collision guard passed');
+
 console.log('\n🎉 All Christie Projector plugin tests passed!');

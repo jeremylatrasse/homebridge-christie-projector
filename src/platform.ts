@@ -26,9 +26,29 @@ export interface NormalizedChristiePlatformConfig {
   devices: ChristieDeviceConfig[];
 }
 
+const PUBLISHED_EXTERNAL_UUIDS_SYMBOL = Symbol.for(
+  'homebridge-christie-projector.publishedExternalUuids',
+);
+
+function getProcessPublishedExternalUuids(): Set<string> {
+  const globalStore = globalThis as Record<symbol, Set<string> | undefined>;
+  let set = globalStore[PUBLISHED_EXTERNAL_UUIDS_SYMBOL];
+  if (!set) {
+    set = new Set<string>();
+    globalStore[PUBLISHED_EXTERNAL_UUIDS_SYMBOL] = set;
+  }
+  return set;
+}
+
 function normalizePort(rawPort: unknown): number {
-  if (typeof rawPort === 'number' && Number.isFinite(rawPort) && rawPort >= 1 && rawPort <= 65535) {
-    return Math.floor(rawPort);
+  const numeric =
+    typeof rawPort === 'number'
+      ? rawPort
+      : typeof rawPort === 'string' && rawPort.trim().length > 0
+        ? Number(rawPort.trim())
+        : NaN;
+  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 65535) {
+    return Math.floor(numeric);
   }
   return CHRISTIE_DEFAULT_PORT;
 }
@@ -52,8 +72,9 @@ export function normalizePlatformConfig(config: PlatformConfig): NormalizedChris
       port: normalizePort(d.port),
     }));
 
-  // Support legacy/single-device top-level host configuration when devices[] is empty
-  if (devices.length === 0 && typeof config.host === 'string' && config.host.trim().length > 0) {
+  // Support legacy/single-device top-level host configuration when devices[] has no configured hosts
+  const hasConfiguredDeviceHost = devices.some((d) => d.host.length > 0);
+  if (!hasConfiguredDeviceHost && typeof config.host === 'string' && config.host.trim().length > 0) {
     devices.push({
       name: platformName,
       host: config.host.trim(),
@@ -90,11 +111,20 @@ export function normalizePlatformConfig(config: PlatformConfig): NormalizedChris
 }
 
 export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
+  /**
+   * Resets the process-wide registry of published external accessory UUIDs.
+   * Intended for unit tests.
+   */
+  public static resetPublishedExternalUuids(): void {
+    getProcessPublishedExternalUuids().clear();
+  }
+
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
 
   public readonly accessories: PlatformAccessory[] = [];
   private readonly clients: Map<string, ChristieClient> = new Map();
+  private readonly ownedExternalUuids = new Set<string>();
   private readonly normalizedConfig: NormalizedChristiePlatformConfig;
   private readonly registeredPlatformName: string;
 
@@ -124,6 +154,11 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
       for (const client of this.clients.values()) {
         client.stop();
       }
+      const publishedExternalUuids = getProcessPublishedExternalUuids();
+      for (const uuid of this.ownedExternalUuids) {
+        publishedExternalUuids.delete(uuid);
+      }
+      this.ownedExternalUuids.clear();
     });
   }
 
@@ -140,6 +175,7 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
    */
   discoverDevices(): void {
     const validDevices: ChristieDeviceConfig[] = [];
+    const seenEndpoints = new Set<string>();
 
     for (const raw of this.normalizedConfig.devices) {
       const host = raw.host;
@@ -149,7 +185,19 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
           this.log.error(`Skipping Christie device "${raw.name || host}" — ${validation.reason}`);
           continue;
         }
-        validDevices.push(raw);
+        const port = raw.port || CHRISTIE_DEFAULT_PORT;
+        const endpointKey = `${host.toLowerCase()}:${port}`;
+        if (seenEndpoints.has(endpointKey)) {
+          this.log.warn(
+            `Skipping duplicate Christie device "${raw.name || host}" (${host}:${port}) to prevent a HomeKit address collision. Check config.json for duplicate device entries.`,
+          );
+          continue;
+        }
+        seenEndpoints.add(endpointKey);
+        validDevices.push({
+          ...raw,
+          port,
+        });
       } else {
         const rawName = typeof raw.name === 'string' ? raw.name.trim() : '';
         const isCustomDevice =
@@ -190,9 +238,25 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
       return;
     }
 
+    const publishedExternalUuids = getProcessPublishedExternalUuids();
+    const accessoriesToPublish: PlatformAccessory[] = [];
+
     for (const device of validDevices) {
       const deviceName = sanitizeHomeKitName(device.name || 'Christie Projector', 'Christie Projector');
       const port = device.port || CHRISTIE_DEFAULT_PORT;
+
+      // Keep UUID seed unchanged so Apple Home room assignments and scenes remain stable.
+      const uuid = this.api.hap.uuid.generate(`christie-projector-${device.host}:${port}`);
+      if (publishedExternalUuids.has(uuid)) {
+        this.log.warn(
+          `[${deviceName}] External accessory for ${device.host}:${port} is already published in this Homebridge process — skipping duplicate to avoid a HomeKit address collision. Check config.json for duplicate ChristieProjector platform blocks or devices.`,
+        );
+        continue;
+      }
+
+      // Reserve synchronously before calling async publishExternalAccessories
+      publishedExternalUuids.add(uuid);
+      this.ownedExternalUuids.add(uuid);
 
       const client = new ChristieClient(
         {
@@ -210,13 +274,11 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
         this.log,
       );
 
-      this.clients.set(`${device.host}:${port}`, client);
+      this.clients.set(`${device.host.toLowerCase()}:${port}`, client);
       client.start();
 
       // Publish 1 unified external Television/Projector accessory containing the Projector,
       // named Input Sources, and optional Shutter/Freeze/OSD/PIP/Lens/Pattern switches.
-      // Keep UUID seed unchanged so Apple Home room assignments and scenes remain stable.
-      const uuid = this.api.hap.uuid.generate(`christie-projector-${device.host}:${port}`);
       const accessory = new this.api.platformAccessory(
         deviceName,
         uuid,
@@ -229,12 +291,16 @@ export class ChristieProjectorPlatform implements DynamicPlatformPlugin {
         port,
       });
 
+      this.log.info(`Publishing Christie Projector accessory: ${deviceName} (${device.host}:${port})`);
+      accessoriesToPublish.push(accessory);
+    }
+
+    if (accessoriesToPublish.length > 0) {
       try {
-        this.log.info(`Publishing Christie Projector accessory: ${deviceName} (${device.host}:${port})`);
-        this.api.publishExternalAccessories(PLUGIN_NAME, [accessory]);
+        this.api.publishExternalAccessories(PLUGIN_NAME, accessoriesToPublish);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        this.log.error(`[${deviceName}] Failed to publish Christie Projector accessory: ${msg}`);
+        this.log.error(`Failed to publish Christie Projector accessory(ies): ${msg}`);
       }
     }
   }
