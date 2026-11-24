@@ -82,7 +82,8 @@ MODE="${RESULT%%:*}"
 VERSION="${RESULT#*:}"
 
 if [ "$MODE" = "AMEND" ] && [ -n "$VERSION" ]; then
-  git add package.json package-lock.json 2>/dev/null || true
+  [ -f package.json ] && git add package.json 2>/dev/null || true
+  [ -f package-lock.json ] && git add package-lock.json 2>/dev/null || true
   SKIP_VERSION_BUMP=1 git commit --amend --no-edit --no-verify >/dev/null 2>&1
   git tag -f "v${VERSION}" >/dev/null 2>&1 || true
 elif [ "$MODE" = "OK" ] && [ -n "$VERSION" ]; then

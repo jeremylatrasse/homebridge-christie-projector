@@ -94,7 +94,8 @@ if [ -x "./node_modules/.bin/tsc" ]; then
 fi
 
 if [ -n "$NEW_VERSION" ]; then
-  git add package.json package-lock.json 2>/dev/null || true
+  [ -f package.json ] && git add package.json 2>/dev/null || true
+  [ -f package-lock.json ] && git add package-lock.json 2>/dev/null || true
 fi
 
 exit 0
