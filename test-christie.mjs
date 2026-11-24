@@ -660,4 +660,78 @@ for (const c of dupPlatform2['clients'].values()) c.stop();
 ChristieProjectorPlatform.resetPublishedExternalUuids();
 console.log('✓ Duplicate device & platform address collision guard passed');
 
+
+// 13. Power-ON standalone transmission, whitespace onCommand fallback & dropped-socket retry
+{
+  const firstChunks = [];
+  let retryAttempts = 0;
+  const retryServer = net.createServer((socket) => {
+    retryAttempts += 1;
+    const attempt = retryAttempts;
+    socket.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      firstChunks.push({ attempt, text });
+      if (attempt === 1) {
+        // Simulate projector closing socket before acknowledging (PWR 1)
+        socket.destroy();
+        return;
+      }
+      if (text.includes("(PWR 1)")) {
+        socket.write('(PWR!001 "On")\r\n');
+      }
+    });
+  });
+
+  await new Promise((resolve) => retryServer.listen(0, "127.0.0.1", resolve));
+  const retryPort = retryServer.address().port;
+  const powerInfoLogs = [];
+  const powerWarnLogs = [];
+  try {
+    const retryClient = new ChristieClient(
+      {
+        host: "127.0.0.1",
+        port: retryPort,
+        onCommand: "   ", // whitespace-only override must fall back to (PWR 1)
+        pollInterval: 60,
+        reconnectInterval: 0.15,
+        cooldownGraceSeconds: 5,
+      },
+      {
+        info: (m) => powerInfoLogs.push(m),
+        warn: (m) => powerWarnLogs.push(m),
+        error: () => {},
+        debug: () => {},
+      },
+    );
+    assert.strictEqual(retryClient.config.onCommand, "(PWR 1)", "Whitespace-only onCommand must fall back to (PWR 1)");
+    retryClient.start();
+    await retryClient.powerOn();
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    assert.ok(retryAttempts >= 2, "Client should reconnect after dropped unacknowledged power-on socket");
+    assert.strictEqual(
+      firstChunks[0].text.trim(),
+      "(PWR 1)",
+      "Initial TCP write on powerOn must send standalone (PWR 1) without coalesced status queries",
+    );
+    assert.ok(
+      firstChunks.some((c) => c.attempt >= 2 && c.text.includes("(PWR 1)")),
+      "Client must retry (PWR 1) on reconnect when initial socket drops without reply",
+    );
+    assert.strictEqual(retryClient.state.power, true, "Power state should stay ON during retry and confirm ON");
+    assert.ok(
+      powerInfoLogs.some((m) => m.includes("Sending power ON command -> (PWR 1)")),
+      "powerOn must log the target command at info level",
+    );
+    assert.ok(
+      powerInfoLogs.some((m) => m.includes("Transmitted (PWR 1)")),
+      "powerOn must log actual socket transmission at info level",
+    );
+    retryClient.stop();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    retryServer.close();
+  }
+}
+console.log("✓ Power-ON standalone transmission & dropped-socket retry tests passed");
+
 console.log('\n🎉 All Christie Projector plugin tests passed!');

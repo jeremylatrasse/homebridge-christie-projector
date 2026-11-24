@@ -79,8 +79,12 @@ export declare class ChristieClient extends EventEmitter {
     private pollTimer?;
     private transitionTimer?;
     private connectTimeoutTimer?;
+    private initialPollTimer?;
     private powerTransitionTarget;
     private powerTransitionUntil;
+    private pendingPowerOnCommand;
+    private pendingPowerOnRetries;
+    private lastPowerOnWriteAt;
     private awaitingResponse;
     private lastDataReceivedAt;
     private lastProbeSentAt;

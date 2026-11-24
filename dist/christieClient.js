@@ -113,8 +113,12 @@ class ChristieClient extends node_events_1.EventEmitter {
     pollTimer;
     transitionTimer;
     connectTimeoutTimer;
+    initialPollTimer;
     powerTransitionTarget = null;
     powerTransitionUntil = 0;
+    pendingPowerOnCommand = null;
+    pendingPowerOnRetries = 0;
+    lastPowerOnWriteAt = 0;
     awaitingResponse = false;
     lastDataReceivedAt = 0;
     lastProbeSentAt = 0;
@@ -173,9 +177,9 @@ class ChristieClient extends node_events_1.EventEmitter {
             cooldownGraceSeconds: config.cooldownGraceSeconds !== undefined ? config.cooldownGraceSeconds : 60,
             treatCode10AsOn: config.treatCode10AsOn !== undefined ? config.treatCode10AsOn : true,
             inputCommandType: config.inputCommandType || 'SIN',
-            onCommand: config.onCommand || '(PWR 1)',
-            offCommand: config.offCommand || '(PWR 0)',
-            stateCommand: config.stateCommand || '(PWR?)',
+            onCommand: (typeof config.onCommand === 'string' ? config.onCommand.trim() : '') || '(PWR 1)',
+            offCommand: (typeof config.offCommand === 'string' ? config.offCommand.trim() : '') || '(PWR 0)',
+            stateCommand: (typeof config.stateCommand === 'string' ? config.stateCommand.trim() : '') || '(PWR?)',
         };
     }
     start() {
@@ -210,6 +214,10 @@ class ChristieClient extends node_events_1.EventEmitter {
         if (this.connectTimeoutTimer) {
             clearTimeout(this.connectTimeoutTimer);
             this.connectTimeoutTimer = undefined;
+        }
+        if (this.initialPollTimer) {
+            clearTimeout(this.initialPollTimer);
+            this.initialPollTimer = undefined;
         }
     }
     beginHeartbeatProbing() {
@@ -335,6 +343,7 @@ class ChristieClient extends node_events_1.EventEmitter {
         this.log.debug(`[${this.config.host}] Connecting to Christie Projector at ${this.config.host}:${this.config.port}...`);
         const socket = new net.Socket();
         this.socket = socket;
+        socket.setNoDelay(true);
         socket.setKeepAlive(true, 10000);
         socket.setTimeout(Math.max(15000, this.config.pollInterval * 2000));
         if (this.connectTimeoutTimer) {
@@ -343,7 +352,12 @@ class ChristieClient extends node_events_1.EventEmitter {
         this.connectTimeoutTimer = setTimeout(() => {
             this.connectTimeoutTimer = undefined;
             if (this.isConnecting) {
-                this.log.debug(`[${this.config.host}] Connect attempt timed out`);
+                if (this.powerTransitionTarget !== null && Date.now() < this.powerTransitionUntil) {
+                    this.log.warn(`[${this.config.host}:${this.config.port}] TCP connect timed out while sending power ${this.powerTransitionTarget ? 'ON' : 'OFF'}.`);
+                }
+                else {
+                    this.log.debug(`[${this.config.host}] Connect attempt timed out`);
+                }
                 this.handleSocketClose();
             }
         }, 5000);
@@ -355,13 +369,29 @@ class ChristieClient extends node_events_1.EventEmitter {
             this.isConnecting = false;
             this.lastProbeSentAt = Date.now();
             this.log.debug(`[${this.config.host}] TCP connected to Christie Projector on port ${this.config.port}`);
+            const hadQueuedCommands = this.commandQueue.length > 0;
             // Flush any commands queued while connecting
             while (this.commandQueue.length > 0) {
                 const nextCmd = this.commandQueue.shift();
                 this.writeToSocket(nextCmd);
             }
-            // Query initial projector state
-            this.pollStatus();
+            // Defer initial status polling slightly when a queued command (such as (PWR 1))
+            // was just flushed so it is sent cleanly in its own TCP packet rather than
+            // coalesced with (PWR?)/(SHU?)/(SIN?)/(FRZ?) queries.
+            if (hadQueuedCommands) {
+                if (this.initialPollTimer) {
+                    clearTimeout(this.initialPollTimer);
+                }
+                this.initialPollTimer = setTimeout(() => {
+                    this.initialPollTimer = undefined;
+                    if (!this.isDestroyed && this.isConnected()) {
+                        this.pollStatus();
+                    }
+                }, 150);
+            }
+            else {
+                this.pollStatus();
+            }
         });
         socket.on('data', (data) => {
             this.handleIncomingData(data.toString('utf8'));
@@ -377,7 +407,12 @@ class ChristieClient extends node_events_1.EventEmitter {
             this.queryPower();
         });
         socket.on('error', (err) => {
-            this.log.debug(`[${this.config.host}] Socket error: ${err.message}`);
+            if (this.powerTransitionTarget !== null && Date.now() < this.powerTransitionUntil) {
+                this.log.warn(`[${this.config.host}:${this.config.port}] TCP error during power ${this.powerTransitionTarget ? 'ON' : 'OFF'}: ${err.message}`);
+            }
+            else {
+                this.log.debug(`[${this.config.host}] Socket error: ${err.message}`);
+            }
         });
         socket.on('close', (hadError) => {
             this.log.debug(`[${this.config.host}] Socket closed (hadError: ${hadError})`);
@@ -390,24 +425,17 @@ class ChristieClient extends node_events_1.EventEmitter {
             clearTimeout(this.connectTimeoutTimer);
             this.connectTimeoutTimer = undefined;
         }
+        if (this.initialPollTimer) {
+            clearTimeout(this.initialPollTimer);
+            this.initialPollTimer = undefined;
+        }
         if (this.socket) {
             const sock = this.socket;
             this.socket = null;
             try {
                 sock.removeAllListeners();
-                if (!sock.destroyed && !this.isConnecting && sock.writable) {
-                    sock.end();
-                    const forceDestroy = setTimeout(() => {
-                        if (!sock.destroyed) {
-                            sock.destroy();
-                        }
-                    }, 150);
-                    forceDestroy.unref();
-                }
-                else {
-                    sock.end();
-                    sock.destroy();
-                }
+                sock.end();
+                sock.destroy();
             }
             catch {
                 // ignore errors on tear-down
@@ -425,9 +453,21 @@ class ChristieClient extends node_events_1.EventEmitter {
     }
     handleSocketClose() {
         const prevPower = this.state.power;
+        const withinPowerOnGrace = this.powerTransitionTarget === true && Date.now() < this.powerTransitionUntil;
+        if (this.pendingPowerOnCommand &&
+            this.pendingPowerOnRetries > 0 &&
+            withinPowerOnGrace &&
+            this.lastPowerOnWriteAt > 0 &&
+            this.lastDataReceivedAt < this.lastPowerOnWriteAt) {
+            this.pendingPowerOnRetries -= 1;
+            if (!this.commandQueue.includes(this.pendingPowerOnCommand)) {
+                this.commandQueue.unshift(this.pendingPowerOnCommand);
+            }
+            this.log.warn(`[${this.config.host}:${this.config.port}] Connection closed before projector acknowledged ${this.pendingPowerOnCommand} — will retry on reconnect (${this.pendingPowerOnRetries} attempt(s) left).`);
+        }
         this.disconnect();
         this.recordHeartbeatFailure();
-        if (prevPower) {
+        if (prevPower && !withinPowerOnGrace) {
             this.state.power = false;
             this.state.powerStatus = 'OFF';
             this.emit('powerChange', false);
@@ -473,7 +513,7 @@ class ChristieClient extends node_events_1.EventEmitter {
      */
     pollStatus() {
         this.sendRaw(this.config.stateCommand);
-        if (this.state.power) {
+        if (this.state.power && this.powerTransitionTarget !== true) {
             this.queryShutter();
             this.queryInput();
             this.queryFreeze();
@@ -482,6 +522,10 @@ class ChristieClient extends node_events_1.EventEmitter {
     // --- Protocol Parsing ---
     markUnitResponding() {
         this.lastDataReceivedAt = Date.now();
+        if (this.pendingPowerOnCommand && this.lastPowerOnWriteAt > 0 && this.lastDataReceivedAt >= this.lastPowerOnWriteAt) {
+            this.pendingPowerOnCommand = null;
+            this.pendingPowerOnRetries = 0;
+        }
         if (this.awaitingResponse) {
             this.awaitingResponse = false;
             this.emit('connected');
@@ -856,8 +900,26 @@ class ChristieClient extends node_events_1.EventEmitter {
         if (!this.socket || this.socket.destroyed) {
             return;
         }
+        const formattedOn = ChristieClient.formatCommand(this.config.onCommand);
+        const formattedOff = ChristieClient.formatCommand(this.config.offCommand);
+        const isPowerCmd = formattedCommand === formattedOn || formattedCommand === formattedOff;
+        if (formattedCommand === this.pendingPowerOnCommand) {
+            this.lastPowerOnWriteAt = Date.now();
+        }
         this.log.debug(`[Christie TX] ${formattedCommand}`);
-        this.socket.write(`${formattedCommand}\r\n`);
+        this.socket.write(`${formattedCommand}\r\n`, (err) => {
+            if (err) {
+                this.log.warn(`[${this.config.host}:${this.config.port}] Failed to transmit ${formattedCommand}: ${err.message}`);
+                if (isPowerCmd && !this.commandQueue.includes(formattedCommand)) {
+                    this.commandQueue.unshift(formattedCommand);
+                }
+                this.handleSocketClose();
+                return;
+            }
+            if (isPowerCmd) {
+                this.log.info(`[${this.config.host}:${this.config.port}] Transmitted ${formattedCommand}`);
+            }
+        });
     }
     /**
      * Sends a Christie command (automatically wrapped in parentheses if not already).
@@ -884,9 +946,13 @@ class ChristieClient extends node_events_1.EventEmitter {
      * Power On: Sends `(PWR 1)` (or configured `onCommand`), plus optional Wake-on-LAN if `mac` is set.
      */
     async powerOn() {
-        this.log.debug(`[${this.config.host}] Powering ON Christie Projector -> ${this.config.onCommand}`);
+        const formattedOn = ChristieClient.formatCommand(this.config.onCommand);
+        this.log.info(`[${this.config.host}:${this.config.port}] Sending power ON command -> ${formattedOn}`);
         this.powerTransitionTarget = true;
         this.powerTransitionUntil = Date.now() + this.config.cooldownGraceSeconds * 1000;
+        this.pendingPowerOnCommand = formattedOn;
+        this.pendingPowerOnRetries = 3;
+        this.lastPowerOnWriteAt = 0;
         const prevPower = this.state.power;
         this.state.power = true;
         this.state.powerStatus = 'WARMING';
@@ -896,22 +962,38 @@ class ChristieClient extends node_events_1.EventEmitter {
         if (this.config.mac) {
             try {
                 await this.sendWakeOnLan(this.config.mac);
-                this.log.debug(`[${this.config.host}] Sent Wake-on-LAN packet to ${this.config.mac}`);
+                this.log.info(`[${this.config.host}:${this.config.port}] Sent Wake-on-LAN packet to ${this.config.mac}`);
             }
             catch (err) {
                 const error = err;
-                this.log.warn(`[${this.config.host}] Wake-on-LAN error: ${error.message}`);
+                this.log.warn(`[${this.config.host}:${this.config.port}] Wake-on-LAN error: ${error.message}`);
             }
         }
+        // If an existing socket has not received data recently (possible half-open ghost socket
+        // left over from standby), reset it so the ON command is sent over a fresh TCP connection.
+        const socketAgeMs = this.lastDataReceivedAt > 0 ? Date.now() - this.lastDataReceivedAt : Infinity;
+        if (this.socket && (this.isConnecting || socketAgeMs > this.config.pollInterval * 1000)) {
+            this.disconnect();
+        }
+        // Queue ON command before opening/using the connection so it is always flushed first.
+        if (!this.isConnected() && !this.commandQueue.includes(formattedOn)) {
+            this.commandQueue.unshift(formattedOn);
+        }
         this.beginHeartbeatProbing();
-        this.sendRaw(this.config.onCommand);
+        if (this.isConnected()) {
+            this.sendRaw(formattedOn);
+        }
         this.scheduleTransitionCheck();
     }
     /**
      * Power Off: Sends `(PWR 0)` (or configured `offCommand`).
      */
     powerOff() {
-        this.log.debug(`[${this.config.host}] Powering OFF Christie Projector -> ${this.config.offCommand}`);
+        const formattedOff = ChristieClient.formatCommand(this.config.offCommand);
+        this.log.info(`[${this.config.host}:${this.config.port}] Sending power OFF command -> ${formattedOff}`);
+        this.pendingPowerOnCommand = null;
+        this.pendingPowerOnRetries = 0;
+        this.lastPowerOnWriteAt = 0;
         this.heartbeatActive = true;
         this.expectedPowerState = 'off';
         this.heartbeatLogState = 'awaiting-expected-failure';
@@ -926,7 +1008,7 @@ class ChristieClient extends node_events_1.EventEmitter {
         if (prevPower) {
             this.emit('powerChange', false);
         }
-        this.sendRaw(this.config.offCommand);
+        this.sendRaw(formattedOff);
         this.scheduleTransitionCheck();
     }
     scheduleTransitionCheck() {
