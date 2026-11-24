@@ -2,16 +2,21 @@
   "pluginAlias": "ChristieProjector",
   "pluginType": "platform",
   "singular": true,
+  "strictValidation": true,
+  "fixArrays": true,
   "headerDisplay": "Control Christie Digital projectors over Ethernet TCP/IP (Port 3002) using the Christie ASCII Serial API.",
   "footerDisplay": "For documentation and a full reference of Christie Serial API commands, visit https://github.com/jeremylatrasse/homebridge-christie-projector",
   "schema": {
     "type": "object",
+    "required": [
+      "name"
+    ],
     "properties": {
       "name": {
         "title": "Platform Name",
         "type": "string",
         "default": "Christie Projector",
-        "required": true
+        "description": "The name for this platform instance in Homebridge."
       },
       "devices": {
         "title": "Christie Projectors",
@@ -32,9 +37,8 @@
             "host": {
               "title": "IP Address or Hostname",
               "type": "string",
-              "required": true,
               "placeholder": "172.16.1.247",
-              "description": "IPv4 address or hostname of the Christie projector on your local network.",
+              "description": "IPv4 address (4 octets, e.g. 172.16.1.247) or hostname of the Christie projector on your local network.",
               "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)*([A-Za-z]|[A-Za-z][A-Za-z0-9\\-]*[A-Za-z0-9]))$"
             },
             "port": {
@@ -359,92 +363,5 @@
         }
       }
     }
-  },
-  "layout": [
-    {
-      "type": "fieldset",
-      "title": "General Settings",
-      "items": [
-        "name"
-      ]
-    },
-    {
-      "key": "devices",
-      "type": "array",
-      "buttonText": "Add Christie Projector",
-      "items": [
-        "devices[].name",
-        "devices[].host",
-        "devices[].port",
-        "devices[].pollInterval",
-        "devices[].cooldownGraceSeconds",
-        "devices[].treatCode10AsOn",
-        "devices[].mac",
-        "devices[].inputCommandType",
-        {
-          "type": "help",
-          "helpvalue": "<h5>Projector Controls & Switches</h5><p>Select which built-in Christie projector functions to expose as tiles in Apple Home.</p>"
-        },
-        "devices[].enableShutterSwitch",
-        "devices[].enablePowerSwitch",
-        "devices[].enableFreezeSwitch",
-        "devices[].enableOsdSwitch",
-        "devices[].enablePipSwitch",
-        "devices[].enableAutoSetupSwitch",
-        "devices[].enableLensCalibrateSwitch",
-        "devices[].enableLightPowerSlider",
-        "devices[].lightSliderType",
-        {
-          "key": "devices[].inputs",
-          "type": "array",
-          "buttonText": "Add Input Source",
-          "items": [
-            "devices[].inputs[].id",
-            "devices[].inputs[].name",
-            "devices[].inputs[].type",
-            "devices[].inputs[].commandType"
-          ]
-        },
-        {
-          "key": "devices[].channels",
-          "type": "array",
-          "buttonText": "Add Channel Switch",
-          "items": [
-            "devices[].channels[].id",
-            "devices[].channels[].name"
-          ]
-        },
-        {
-          "key": "devices[].lensPresets",
-          "type": "array",
-          "buttonText": "Add Lens / Aspect Preset Switch",
-          "items": [
-            "devices[].lensPresets[].id",
-            "devices[].lensPresets[].name",
-            "devices[].lensPresets[].commandType"
-          ]
-        },
-        {
-          "key": "devices[].testPatterns",
-          "type": "array",
-          "buttonText": "Add Test Pattern Switch",
-          "items": [
-            "devices[].testPatterns[].id",
-            "devices[].testPatterns[].name"
-          ]
-        },
-        {
-          "key": "devices[].customCommands",
-          "type": "array",
-          "buttonText": "Add Custom Command Switch",
-          "items": [
-            "devices[].customCommands[].name",
-            "devices[].customCommands[].onCommand",
-            "devices[].customCommands[].offCommand",
-            "devices[].customCommands[].momentary"
-          ]
-        }
-      ]
-    }
-  ]
+  }
 }

@@ -234,18 +234,34 @@ assert.equal(isExplicitlyNamed('Input 1'), false);
 assert.equal(isExplicitlyNamed('Channel 2'), false);
 console.log('✓ HomeKit name sanitization & explicit naming filter passed');
 
-// 5. Verify config.schema.json allows saving with IP address and optional arrays
+// 5. Verify config.schema.json uses valid Draft-4+ schema rules without a conflicting custom layout
 const deviceProps = schema.schema.properties.devices.items.properties;
+assert.strictEqual(schema.singular, true, 'singular must be true so Homebridge UI manages a single platform block');
+assert.strictEqual(schema.strictValidation, true, 'strictValidation must be true so invalid device cards cannot be saved');
+assert.strictEqual(schema.fixArrays, true, 'fixArrays must be true so nested arrays inside devices[] never corrupt config.json');
+assert.strictEqual(schema.layout, undefined, 'must not define a custom layout that can desync nested arrays or strip _bridge');
+assert.deepEqual(
+  schema.schema.required,
+  ['name'],
+  'top-level schema must use Draft-4+ required array for name',
+);
 assert.deepEqual(
   schema.schema.properties.devices.items.required,
   ['host'],
-  'devices items must require host so unconfigured cards cannot be saved in Homebridge UI',
+  'devices items must require host via Draft-4+ required array so unconfigured cards cannot be saved in Homebridge UI',
 );
-assert.equal(
-  deviceProps.host.required,
-  true,
-  'host property must be marked required: true',
-);
+function assertNoBooleanRequired(node, path) {
+  if (!node || typeof node !== "object") return;
+  assert.notStrictEqual(
+    typeof node.required,
+    "boolean",
+    `Draft-3 boolean required is invalid in JSON Schema Draft 4+ at ${path}`,
+  );
+  for (const [k, v] of Object.entries(node)) {
+    if (v && typeof v === "object") assertNoBooleanRequired(v, `${path}.${k}`);
+  }
+}
+assertNoBooleanRequired(schema.schema, "schema");
 assert.equal(
   deviceProps.host.format,
   undefined,
